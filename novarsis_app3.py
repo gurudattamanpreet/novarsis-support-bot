@@ -21,16 +21,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Add servers parameter with your base URL
-app = FastAPI(
-    title="Novarsis Support Bot API",
-    servers=[
-        {
-            "url": "https://novarsis-support-bot-6.onrender.com",
-            "description": "Production Server"
-        }
-    ]
-)
+# FastAPI app initialization
+app = FastAPI(title="Novarsis Support Bot API")
 
 # Add CORS middleware - more secure for production
 app.add_middleware(
