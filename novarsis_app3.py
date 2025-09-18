@@ -16,6 +16,7 @@ import asyncio
 import uvicorn
 import os
 import logging
+import math
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -45,10 +46,24 @@ except Exception as e:
     logger.error(f"Failed to initialize Gemini model: {str(e)}")
     model = None
 
+# Initialize embedding model for semantic filtering
+try:
+    embedding_model = 'models/embedding-001'
+    reference_text = "Novarsis AIO SEO Tool support, SEO analysis, website analysis, meta tags, page structure, link analysis, SEO check, SEO report, subscription, account, billing, plan, premium, starter, error, bug, issue, problem, not working, failed, crash, login, password, analysis, report, dashboard, settings, integration, Google, API, website, URL, scan, audit, optimization, mobile, speed, performance, competitor, ranking, keywords, backlinks, technical SEO, canonical, schema, sitemap, robots.txt, crawl, index, search console, analytics, traffic, organic, SERP"
+    reference_embedding = genai.embed_content(
+        model=embedding_model,
+        content=reference_text,
+        task_type="retrieval_document",
+    )['embedding']
+    logger.info("Embedding model initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize embedding model: {str(e)}")
+    reference_embedding = None
+
 # In-memory storage (for demo - use Redis or database in production)
 sessions = {}
 
-# Novarsis-specific keywords
+# Novarsis-specific keywords (kept as fallback)
 NOVARSIS_KEYWORDS = [
     'novarsis', 'seo', 'website analysis', 'meta tags', 'page structure', 'link analysis',
     'seo check', 'seo report', 'subscription', 'account', 'billing', 'plan', 'premium',
@@ -87,6 +102,8 @@ Available Novarsis Features:
 - Account Management
 - Subscription Plans (FREE, STARTER $100/year, PREMIUM $150/year)"""
 
+# WhatsApp number for human support notifications
+WHATSAPP_NUMBER = "+91-8962810180"
 
 # Pydantic models
 class ChatMessage(BaseModel):
@@ -127,7 +144,42 @@ def get_or_create_session(session_id: str) -> SessionData:
     return sessions[session_id]
 
 
+def cosine_similarity(vec1, vec2):
+    """Calculate cosine similarity between two vectors"""
+    if len(vec1) != len(vec2):
+        return 0.0
+    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return dot_product / (norm1 * norm2)
+
+
 def is_novarsis_related(query: str) -> bool:
+    """Check if query is related to Novarsis using semantic filtering with fallback to keywords"""
+    if reference_embedding is not None:
+        try:
+            # Get embedding for user query
+            query_embedding = genai.embed_content(
+                model=embedding_model,
+                content=query,
+                task_type="retrieval_query",
+            )['embedding']
+            
+            # Calculate similarity with reference embedding
+            similarity = cosine_similarity(reference_embedding, query_embedding)
+            
+            # Set threshold for relevance (adjust as needed)
+            threshold = 0.7
+            if similarity >= threshold:
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error in semantic filtering: {str(e)}")
+            # Fall back to keyword method if embedding fails
+    
+    # Fallback to keyword-based filtering
     query_lower = query.lower()
     for keyword in NOVARSIS_KEYWORDS:
         if keyword in query_lower:
@@ -172,6 +224,13 @@ def save_unresolved_query(session: SessionData, query_data: Dict) -> str:
     query_data['status'] = "In Progress"
     session.unresolved_queries.append(query_data)
     session.support_tickets[query_data['ticket_id']] = query_data
+    
+    # Send notification to human support via WhatsApp
+    notification_msg = f"New Novarsis Support Ticket: {query_data['ticket_id']}\nQuery: {query_data['query']}\nTime: {query_data['timestamp']}"
+    logger.info(f"Sending WhatsApp notification to {WHATSAPP_NUMBER}: {notification_msg}")
+    # In a real implementation, you would integrate with a WhatsApp API here
+    # For now, we'll just log the notification
+    
     return query_data['ticket_id']
 
 
@@ -278,12 +337,12 @@ Need to upgrade? Visit: novarsis.tech/pricing"""
         },
         "5": {
             "title": "Contact Novarsis 📞",
-            "response": """📞 **Novarsis Support Contact:**
+            "response": f"""📞 **Novarsis Support Contact:**
 🏢 **Novarsis Technologies**
 Your trusted SEO analysis partner
 📧 **Email:** support@novarsis.tech
 ☎️ **Phone:** +1-800-NOVARSIS (668-2774)
-💬 **Live Chat:** Available 24x7 on novarsis.tech
+💬 **WhatsApp:** {WHATSAPP_NUMBER}
 🌐 **Website:** www.novarsis.tech/support
 **Support Hours:**
 • Technical Support: 24x7
@@ -325,7 +384,7 @@ async def feedback_endpoint(request: dict):
         ticket_id = save_unresolved_query(session, session.current_query)
         return {
             "ticket_id": ticket_id,
-            "message": f"🎫 Novarsis Ticket ID: **{ticket_id}**\n🔄 Connecting to a Novarsis expert... Your query will be resolved in next 15 minutes."
+            "message": f"🎫 Novarsis Ticket ID: **{ticket_id}**\n🔄 Connecting to a Novarsis expert... Your query will be resolved in next 15 minutes.\n💬 We've also sent a notification to our support team at {WHATSAPP_NUMBER}"
         }
     else:
         return {
@@ -393,7 +452,7 @@ async def reset_session(request: dict):
     return {"status": "success", "message": "Session reset successfully"}
 
 
-# HTML Template (keeping the same as your original)
+# HTML Template (updated with welcome message)
 HTML_CONTENT = """
 <!DOCTYPE html>
 <html lang="en">
@@ -669,12 +728,7 @@ HTML_CONTENT = """
             <div class="chat-container" id="chatContainer">
                 <div class="message assistant">
                     <div class="message-content">
-                        🔍 <strong>Welcome to Novarsis Support!</strong><br><br>
-                        I'm here to help you with:<br>
-                        • Novarsis tool errors and issues<br>
-                        • SEO analysis problems<br>
-                        • Account and subscription queries<br>
-                        • Technical support for Novarsis features
+                        Hi user, how can I help you with Novarsis today?
                     </div>
                 </div>
             </div>
@@ -856,12 +910,7 @@ HTML_CONTENT = """
                 chatContainer.innerHTML = `
                     <div class="message assistant">
                         <div class="message-content">
-                            🔍 <strong>Welcome to Novarsis Support!</strong><br><br>
-                            I'm here to help you with:<br>
-                            • Novarsis tool errors and issues<br>
-                            • SEO analysis problems<br>
-                            • Account and subscription queries<br>
-                            • Technical support for Novarsis features
+                            Hi user, how can I help you with Novarsis today?
                         </div>
                     </div>
                 `;
