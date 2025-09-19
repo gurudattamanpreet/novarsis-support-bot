@@ -1,40 +1,33 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+import os
 import json
 import time
 import random
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 import io
 from PIL import Image
-import asyncio
-import uvicorn
-import os
+import math
 import logging
+from typing import Optional, List, Dict
+import hashlib
+import html
+import uvicorn
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FastAPI app initialization
-app = FastAPI(title="Novarsis Support Bot API")
+# Initialize FastAPI app
+app = FastAPI(title="Novarsis Support Center", description="AI Support Assistant for Novarsis SEO Tool")
 
-# Add CORS middleware - more secure for production
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific domains
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Gemini API Configuration - better to use environment variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAry6BNYcjHE2tGUWSjZlq5RohT8F6I7bs")
+# Configure Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBrpsGuAmfZC6tW2__ck0QUQTv7MhlKVgw")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Gemini Flash 2.0 model
@@ -45,848 +38,1104 @@ except Exception as e:
     logger.error(f"Failed to initialize Gemini model: {str(e)}")
     model = None
 
-# In-memory storage (for demo - use Redis or database in production)
-sessions = {}
+# Initialize embedding model - with error handling for quota issues
+reference_embedding = None
+embedding_model = None
+try:
+    embedding_model = 'models/embedding-001'
+    reference_text = "Novarsis AIO SEO Tool support, SEO analysis, website analysis, meta tags, page structure, link analysis, SEO check, SEO report, subscription, account, billing, plan, premium, starter, error, bug, issue, problem, not working, failed, crash, login, password, analysis, report, dashboard, settings, integration, Google, API, website, URL, scan, audit, optimization, mobile, speed, performance, competitor, ranking, keywords, backlinks, technical SEO, canonical, schema, sitemap, robots.txt, crawl, index, search console, analytics, traffic, organic, SERP"
+    reference_embedding = genai.embed_content(
+        model=embedding_model,
+        content=reference_text,
+        task_type="retrieval_document",
+    )['embedding']
+    logger.info("Embedding model initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize embedding model: {str(e)}")
+    # Continue without embedding functionality
+    reference_embedding = None
 
-# Novarsis-specific keywords
+# Constants
+WHATSAPP_NUMBER = "+91-8962810180"
+SUPPORT_EMAIL = "support@novarsis.tech"
+
+# Enhanced System Prompt
+SYSTEM_PROMPT = """You are Nova, the official AI support assistant for Novarsis AIO SEO Tool.
+
+PERSONALITY:
+- Professional yet friendly
+- Proactive in offering solutions
+- Empathetic to user frustrations
+- Clear and concise in explanations
+
+SCOPE:
+You ONLY help with Novarsis-related queries:
+✓ SEO analysis issues and errors
+✓ Account and subscription management
+✓ Technical troubleshooting
+✓ Feature explanations and tutorials
+✓ Billing and payment issues
+✓ Report generation problems
+✓ API and integration support
+✓ Performance optimization tips
+
+For non-Novarsis queries, politely redirect:
+"I specialize in Novarsis SEO Tool support. For this query, I'd recommend [appropriate resource]. 
+Is there anything about Novarsis I can help you with instead?"
+
+RESPONSE STYLE:
+1. Acknowledge the issue
+2. Provide step-by-step solutions
+3. Offer alternatives if needed
+4. Ask if further help is required
+
+Use emojis sparingly for friendliness: ✅ ❌ 💡 🔧 📊 🚀
+Format responses with clear sections and bullet points."""
+
+# Novarsis Keywords
 NOVARSIS_KEYWORDS = [
     'novarsis', 'seo', 'website analysis', 'meta tags', 'page structure', 'link analysis',
     'seo check', 'seo report', 'subscription', 'account', 'billing', 'plan', 'premium',
     'starter', 'error', 'bug', 'issue', 'problem', 'not working', 'failed', 'crash',
-    'login', 'password', 'analysis', 'report', 'dashboard', 'settings', 'integration',
-    'google', 'api', 'website', 'url', 'scan', 'audit', 'optimization', 'mobile',
-    'speed', 'performance', 'competitor', 'ranking', 'keywords', 'backlinks',
-    'technical seo', 'canonical', 'schema', 'sitemap', 'robots.txt', 'crawl',
-    'index', 'search console', 'analytics', 'traffic', 'organic', 'serp'
+    'login', 'password', 'analysis', 'report', 'dashboard', 'settings', 'integration'
 ]
 
-# System prompt
-SYSTEM_PROMPT = """You are the official support assistant for Novarsis AIO SEO Tool. 
-IMPORTANT: You ONLY help with Novarsis tool-related queries such as:
-- SEO analysis issues and errors
-- Account and subscription problems
-- Technical issues with the Novarsis platform
-- Feature explanations and usage guidance
-- Billing and payment queries
-- Report generation problems
-- Integration issues
-For ANY query not related to Novarsis tool, respond with:
-"❌ This question is not relevant to Novarsis Support. I can only assist with Novarsis tool-related issues, account management, and technical problems."
-When helping with Novarsis issues:
-- Be professional and helpful
-- Provide step-by-step solutions
-- Reference specific Novarsis features when relevant
-- Guide users through the tool's interface
-- Explain SEO concepts as they relate to Novarsis reports
-Available Novarsis Features:
-- Website SEO Analysis (Basic & Advanced)
-- SEO Reports (Meta, Structure, Links, Technical, Performance)
-- Mobile Optimization Checker
-- Page Speed Analysis
-- Competitor Analysis
-- Account Management
-- Subscription Plans (FREE, STARTER $100/year, PREMIUM $150/year)"""
+# Greeting keywords
+GREETING_KEYWORDS = ["hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening"]
+
+# Set up templates - with error handling
+try:
+    templates = Jinja2Templates(directory="templates")
+    logger.info("Templates initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize templates: {str(e)}")
 
 
-# Pydantic models
-class ChatMessage(BaseModel):
+    # Create a simple fallback template renderer
+    class SimpleTemplates:
+        def __init__(self, directory):
+            self.directory = directory
+
+        def TemplateResponse(self, name, context):
+            # Simple fallback - just return a basic HTML response
+            return HTMLResponse(
+                "<html><body><h1>Novarsis Support Center</h1><p>Template rendering failed. Please check server logs.</p></body></html>")
+
+
+    templates = SimpleTemplates("templates")
+
+# Global session state (in a real app, you'd use Redis or a database)
+session_state = {
+    "chat_history": [],
+    "unresolved_queries": [],
+    "support_tickets": {},
+    "current_plan": None,
+    "current_query": {},
+    "typing": False,
+    "user_name": "User",
+    "session_start": datetime.now(),
+    "resolved_count": 0,
+    "pending_input": None,
+    "uploaded_file": None,
+    "checking_ticket_status": False,
+    "intro_given": False,
+    "last_user_query": ""
+}
+
+# Initialize current plan
+plans = [
+    {"name": "STARTER", "price": "$100/Year", "validity": "Valid till: Dec 31, 2025",
+     "features": ["5 Websites", "Monthly Reports", "Email Support"]},
+    {"name": "PREMIUM", "price": "$150/Year", "validity": "Valid till: Dec 31, 2025",
+     "features": ["Unlimited Websites", "Real-time Reports", "Priority Support", "API Access"]}
+]
+session_state["current_plan"] = random.choice(plans)
+
+
+# Pydantic models for API
+class Message(BaseModel):
+    role: str
+    content: str
+    timestamp: datetime
+    show_feedback: bool = False
+
+
+class ChatRequest(BaseModel):
     message: str
-    session_id: str
     image_data: Optional[str] = None
 
 
-class QuickAction(BaseModel):
-    action: str
-    session_id: str
+class TicketStatusRequest(BaseModel):
+    ticket_id: str
 
 
-class TicketRequest(BaseModel):
-    ticket_number: str
-    session_id: str
+class FeedbackRequest(BaseModel):
+    feedback: str
+    message_index: int
 
 
-class SessionData(BaseModel):
-    chat_history: List[Dict] = []
-    unresolved_queries: List[Dict] = []
-    support_tickets: Dict[str, Dict] = {}
-    current_plan: Dict = {}
-    current_query: Dict = {}
-    executive_connected: bool = False
+# Helper Functions
+def generate_avatar_initial(name):
+    return name[0].upper()
 
 
-# Helper functions
-def get_or_create_session(session_id: str) -> SessionData:
-    if session_id not in sessions:
-        plans = [
-            {"name": "STARTER", "price": "$100/Year", "validity": "Valid till: Dec 31, 2025"},
-            {"name": "PREMIUM", "price": "$150/Year", "validity": "Valid till: Dec 31, 2025"}
-        ]
-        sessions[session_id] = SessionData(
-            current_plan=random.choice(plans)
-        )
-    return sessions[session_id]
+def format_time(timestamp):
+    return timestamp.strftime("%I:%M %p")
+
+
+def cosine_similarity(vec1, vec2):
+    if len(vec1) != len(vec2):
+        return 0.0
+    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return dot_product / (norm1 * norm2)
+
+
+def is_greeting(query: str) -> bool:
+    query_lower = query.lower().strip()
+    return any(greeting in query_lower for greeting in GREETING_KEYWORDS)
 
 
 def is_novarsis_related(query: str) -> bool:
+    # Only use semantic filtering if embedding model was successfully initialized
+    if reference_embedding is not None and embedding_model is not None:
+        try:
+            query_embedding = genai.embed_content(
+                model=embedding_model,
+                content=query,
+                task_type="retrieval_query",
+            )['embedding']
+            similarity = cosine_similarity(reference_embedding, query_embedding)
+            if similarity >= 0.7:
+                return True
+        except Exception as e:
+            logger.error(f"Error in semantic filtering: {str(e)}")
+
+    # Fall back to keyword-based filtering
     query_lower = query.lower()
-    for keyword in NOVARSIS_KEYWORDS:
-        if keyword in query_lower:
-            return True
-    generic_terms = ['help', 'support', 'assist', 'guide', 'how to', 'tutorial']
-    tool_context = ['tool', 'software', 'platform', 'app', 'application', 'system']
-    has_generic = any(term in query_lower for term in generic_terms)
-    has_context = any(term in query_lower for term in tool_context)
-    return has_generic and has_context
+    return any(keyword in query_lower for keyword in NOVARSIS_KEYWORDS)
 
 
-async def get_ai_response(user_input: str, image_data: Optional[bytes] = None) -> str:
+def get_intro_response() -> str:
+    return """Hello! I'm Nova, the official AI support assistant for Novarsis AIO SEO Tool. 
+
+I'm here to help you with any questions or issues you might have regarding our SEO tool. Here's what I can assist you with:
+
+🔍 **SEO Analysis Issues**
+• Website analysis problems
+• Meta tags optimization
+• Page structure issues
+• Link analysis errors
+• SEO check failures
+• Report generation problems
+
+👤 **Account & Subscription Management**
+• Login and password issues
+• Account settings
+• Subscription upgrades/downgrades
+• Billing and payment inquiries
+• Plan features comparison
+
+🛠️ **Technical Troubleshooting**
+• Error messages and bugs
+• Performance issues
+• Integration problems
+• API connectivity
+• Data synchronization
+
+📊 **Feature Explanations & Tutorials**
+• How to use specific features
+• Understanding your SEO reports
+• Competitor analysis
+• Keyword research
+• Technical SEO audit
+
+💡 **Performance Optimization Tips**
+• Improving website speed
+• Mobile optimization
+• Enhancing search rankings
+• Building quality backlinks
+
+How can I assist you today? Feel free to ask any questions about Novarsis!"""
+
+
+def get_ai_response(user_input: str, image_data: Optional[str] = None) -> str:
     if not model:
-        return "I apologize, but the AI service is currently unavailable. Please try again later or connect with a human executive."
+        return "I apologize, but I'm having trouble connecting to my AI service. Please try again in a moment, or click 'Connect to Human' for immediate assistance."
 
     try:
         if not is_novarsis_related(user_input):
-            return "❌ **This question is not relevant to Novarsis Support.**\n\nI can only assist with:\n• Novarsis tool errors and issues\n• SEO analysis problems\n• Account and subscription queries\n• Report generation issues\n• Technical problems with Novarsis platform\n\nPlease ask a question related to Novarsis AIO SEO Tool."
+            return """I understand you need help, but I specialize specifically in Novarsis SEO Tool support. 
+
+For your query, you might want to try:
+• General tech support forums
+• Product-specific documentation
+• Or Google search for more information
+
+Is there anything about **Novarsis SEO Tool** I can help you with? Such as:
+• SEO analysis issues
+• Account management
+• Report generation
+• Technical problems"""
 
         if image_data:
-            prompt = f"{SYSTEM_PROMPT}\n\nUser has shared a screenshot about a Novarsis issue: {user_input}\n\nAnalyze the image and provide a solution specific to Novarsis tool."
-            try:
-                image = Image.open(io.BytesIO(base64.b64decode(image_data)))
-                response = model.generate_content([prompt, image])
-            except Exception as img_error:
-                logger.error(f"Error processing image: {str(img_error)}")
-                return "I apologize, but I couldn't process the uploaded image. Please describe your Novarsis issue in text, and I'll help you with that."
+            prompt = f"{SYSTEM_PROMPT}\n\nUser query with screenshot: {user_input}"
+            image = Image.open(io.BytesIO(base64.b64decode(image_data)))
+            response = model.generate_content([prompt, image])
         else:
-            prompt = f"{SYSTEM_PROMPT}\n\nUser query about Novarsis: {user_input}"
-            chat = model.start_chat(history=[])
-            response = chat.send_message(prompt)
+            prompt = f"{SYSTEM_PROMPT}\n\nUser query: {user_input}"
+            response = model.generate_content(prompt)
 
         return response.text
     except Exception as e:
         logger.error(f"Error generating AI response: {str(e)}")
-        return "I apologize, but I'm having trouble processing your Novarsis-related request. Please try again or connect with a human executive for immediate assistance."
+        return "I encountered an issue processing your request. Please try rephrasing your question or connect with our human support team for assistance."
 
 
-def save_unresolved_query(session: SessionData, query_data: Dict) -> str:
-    query_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def save_unresolved_query(query_data: Dict) -> str:
+    query_data['timestamp'] = datetime.now()
     query_data['ticket_id'] = f"NVS{random.randint(10000, 99999)}"
     query_data['status'] = "In Progress"
-    session.unresolved_queries.append(query_data)
-    session.support_tickets[query_data['ticket_id']] = query_data
+    query_data['priority'] = "High" if "urgent" in query_data['query'].lower() else "Normal"
+    session_state["unresolved_queries"].append(query_data)
+    session_state["support_tickets"][query_data['ticket_id']] = query_data
     return query_data['ticket_id']
 
 
-# API Endpoints
-@app.get("/")
-async def home():
-    return HTMLResponse(content=HTML_CONTENT)
+# API Routes
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.post("/api/chat")
-async def chat_endpoint(chat_message: ChatMessage):
-    session = get_or_create_session(chat_message.session_id)
-    # Add user message to history
-    session.chat_history.append({
+async def chat(request: ChatRequest):
+    # Add user message to chat history
+    user_message = {
         "role": "user",
-        "content": chat_message.message
-    })
+        "content": request.message,
+        "timestamp": datetime.now()
+    }
+    session_state["chat_history"].append(user_message)
+
+    # Store current query for potential escalation
+    session_state["current_query"] = {
+        "query": request.message,
+        "timestamp": datetime.now()
+    }
+
+    # Store last user query for "Connect with an Expert"
+    session_state["last_user_query"] = request.message
+
     # Get AI response
-    response = await get_ai_response(
-        chat_message.message,
-        chat_message.image_data if chat_message.image_data else None
-    )
-    # Add assistant response to history
-    session.chat_history.append({
+    time.sleep(0.5)  # Simulate thinking time
+
+    if session_state["checking_ticket_status"]:
+        ticket_id = request.message.strip().upper()
+
+        if ticket_id.startswith("NVS") and len(ticket_id) > 3:
+            if ticket_id in session_state["support_tickets"]:
+                ticket = session_state["support_tickets"][ticket_id]
+                response = f"""🎫 **Ticket Details:**
+
+**Ticket ID:** {ticket_id}
+**Status:** {ticket['status']}
+**Priority:** {ticket['priority']}
+**Created:** {ticket['timestamp'].strftime('%Y-%m-%d %H:%M')}
+**Query:** {ticket['query']}
+
+Our team is working on your issue. You'll receive a notification when there's an update."""
+            else:
+                response = f"❌ Ticket ID '{ticket_id}' not found. Please check the ticket number and try again, or contact support at {SUPPORT_EMAIL}."
+        else:
+            response = "⚠️ Please enter a valid ticket ID (e.g., NVS12345)."
+
+        session_state["checking_ticket_status"] = False
+        show_feedback = False
+    elif is_greeting(request.message):
+        response = get_intro_response()
+        session_state["intro_given"] = True
+        show_feedback = False
+    else:
+        response = get_ai_response(request.message, request.image_data)
+        show_feedback = True
+
+    # Add bot response to chat history
+    bot_message = {
         "role": "assistant",
         "content": response,
-        "show_feedback": is_novarsis_related(chat_message.message)
-    })
-    # Store current query if relevant
-    if is_novarsis_related(chat_message.message):
-        session.current_query = {
-            "query": chat_message.message,
-            "image": chat_message.image_data
-        }
-    return {
-        "response": response,
-        "show_feedback": is_novarsis_related(chat_message.message),
-        "chat_history": session.chat_history
+        "timestamp": datetime.now(),
+        "show_feedback": show_feedback
     }
+    session_state["chat_history"].append(bot_message)
+
+    return {"response": response, "show_feedback": show_feedback}
 
 
-@app.post("/api/quick-action")
-async def quick_action_endpoint(request: QuickAction):
-    session = get_or_create_session(request.session_id)
-    # Define features and limits outside the f-string
-    starter_features = """✓ Basic SEO Checks
-✓ 5 Websites tracking
-✓ Monthly Reports
-✓ Google Integrations
-✓ Email support"""
-    premium_features = """✓ Advanced SEO Analysis
-✓ Unlimited Websites
-✓ Weekly Reports
-✓ Priority Support
-✓ API Access
-✓ Competitor Analysis
-✓ White-label Reports"""
-    starter_api = "5,000/month"
-    premium_api = "Unlimited"
-    starter_reports = "50/month"
-    premium_reports = "Unlimited"
-    action_responses = {
-        "1": {
-            "title": "Report Novarsis Error 🚨",
-            "response": """📸 **How to Report a Novarsis Error:**
-1. **Take a Screenshot** of the Novarsis error message
-2. **Upload the Screenshot** using the file uploader below
-3. **Describe what you were doing** in Novarsis when the error occurred
-4. Our AI will analyze and provide a Novarsis-specific solution
-**Common Novarsis Issues We Solve:**
-• SEO analysis not completing
-• Report generation errors
-• Login/authentication problems
-• Integration failures with Google tools
-• Dashboard loading issues
-⏱️ **Resolution Time:**
-- AI Solution: Instant
-- If unresolved: Novarsis expert within 15 minutes
-Please upload your Novarsis error screenshot now."""
-        },
-        "2": {
-            "title": "Account & Subscription 💳",
-            "response": f"""👤 **Your Novarsis Account & Subscription:**
-🔍 **Tool:** Novarsis AIO SEO Assistant
-📋 **Current Plan:** {session.current_plan['name']}
-💰 **Price:** {session.current_plan['price']}
-📅 **{session.current_plan['validity']}**
-**Your Novarsis Plan Features:**
-{starter_features if session.current_plan['name'] == 'STARTER' else premium_features}
-**Novarsis Usage Limits:**
-• API Calls: {starter_api if session.current_plan['name'] == 'STARTER' else premium_api}
-• Reports: {starter_reports if session.current_plan['name'] == 'STARTER' else premium_reports}
-Need to upgrade? Visit: novarsis.tech/pricing"""
-        },
-        "3": {
-            "title": "Connect with Expert 👥",
-            "response": "🎫 **Connect with Novarsis Expert**\n\nPlease enter your Novarsis Ticket Number (starts with NVS):",
-            "need_ticket": True
-        },
-        "4": {
-            "title": "Check Ticket Status 📋",
-            "response": "🔍 **Check Novarsis Ticket Status**\n\nPlease enter your Novarsis Ticket Number (format: NVS#####):",
-            "check_status": True
-        },
-        "5": {
-            "title": "Contact Novarsis 📞",
-            "response": """📞 **Novarsis Support Contact:**
-🏢 **Novarsis Technologies**
-Your trusted SEO analysis partner
-📧 **Email:** support@novarsis.tech
-☎️ **Phone:** +1-800-NOVARSIS (668-2774)
-💬 **Live Chat:** Available 24x7 on novarsis.tech
-🌐 **Website:** www.novarsis.tech/support
-**Support Hours:**
-• Technical Support: 24x7
-• Sales Team: Mon-Fri 9AM-6PM EST
-• Billing Support: Mon-Fri 10AM-5PM EST
-📍 **Headquarters:**
-Novarsis Technologies Inc.
-123 SEO Boulevard, Suite 500
-San Francisco, CA 94105
-✨ **Feel free to reach out to us for any Novarsis-related queries!**"""
-        }
+@app.post("/api/check-ticket-status")
+async def check_ticket_status():
+    session_state["checking_ticket_status"] = True
+    response = "Please enter your ticket number (e.g., NVS12345):"
+
+    bot_message = {
+        "role": "assistant",
+        "content": response,
+        "timestamp": datetime.now(),
+        "show_feedback": False
     }
-    if request.action in action_responses:
-        action_data = action_responses[request.action]
-        # Add to chat history
-        session.chat_history.append({
-            "role": "user",
-            "content": action_data["title"]
+    session_state["chat_history"].append(bot_message)
+
+    return {"response": response}
+
+
+@app.post("/api/connect-expert")
+async def connect_expert():
+    if session_state["last_user_query"]:
+        ticket_id = save_unresolved_query({
+            "query": session_state["last_user_query"],
+            "timestamp": datetime.now()
         })
-        session.chat_history.append({
-            "role": "assistant",
-            "content": action_data["response"],
-            "show_feedback": False
-        })
-        return {
-            "response": action_data["response"],
-            "need_ticket": action_data.get("need_ticket", False),
-            "check_status": action_data.get("check_status", False),
-            "chat_history": session.chat_history
-        }
-    raise HTTPException(status_code=400, detail="Invalid action")
+        response = f"""I've created a priority support ticket for you:
+
+🎫 **Ticket ID:** {ticket_id}
+📱 **Status:** Escalated to Human Support
+⏱️ **Response Time:** Within 15 minutes
+
+Our expert team has been notified and will reach out to you shortly via:
+• In-app chat
+• Email to your registered address
+• WhatsApp: {WHATSAPP_NUMBER}
+
+You can check your ticket status anytime by typing 'ticket {ticket_id}'"""
+    else:
+        response = "I'd be happy to connect you with an expert. Please first send your query so I can create a support ticket for you."
+
+    bot_message = {
+        "role": "assistant",
+        "content": response,
+        "timestamp": datetime.now(),
+        "show_feedback": False
+    }
+    session_state["chat_history"].append(bot_message)
+
+    return {"response": response}
 
 
 @app.post("/api/feedback")
-async def feedback_endpoint(request: dict):
-    session = get_or_create_session(request["session_id"])
-    feedback = request["feedback"]
-    if feedback == "no":
-        ticket_id = save_unresolved_query(session, session.current_query)
-        return {
-            "ticket_id": ticket_id,
-            "message": f"🎫 Novarsis Ticket ID: **{ticket_id}**\n🔄 Connecting to a Novarsis expert... Your query will be resolved in next 15 minutes."
-        }
+async def feedback(request: FeedbackRequest):
+    if request.feedback == "no":
+        ticket_id = save_unresolved_query(session_state["current_query"])
+        response = f"""I understand this didn't fully resolve your issue. I've created a priority support ticket for you:
+
+🎫 **Ticket ID:** {ticket_id}
+📱 **Status:** Escalated to Human Support
+⏱️ **Response Time:** Within 15 minutes
+
+Our expert team has been notified and will reach out to you shortly via:
+• In-app chat
+• Email to your registered address
+• WhatsApp: {WHATSAPP_NUMBER}
+
+You can check your ticket status anytime by typing 'ticket {ticket_id}'"""
+        session_state["resolved_count"] -= 1
     else:
-        return {
-            "message": "Great! Thank you for using Novarsis Support. Have a productive SEO analysis! 🚀"
-        }
+        response = "Great! I'm glad I could help. Feel free to ask if you have any more questions about Novarsis! 🚀"
+        session_state["resolved_count"] += 1
 
-
-@app.post("/api/check-ticket")
-async def check_ticket_endpoint(request: TicketRequest):
-    session = get_or_create_session(request.session_id)
-    if request.ticket_number.startswith("NVS"):
-        if request.ticket_number in session.support_tickets:
-            ticket = session.support_tickets[request.ticket_number]
-            response = f"""✅ **Novarsis Ticket Found!**
-🎫 **Ticket ID:** {request.ticket_number}
-🔍 **Tool:** Novarsis AIO
-📅 **Created:** {ticket['timestamp']}
-📊 **Status:** In Progress
-⏱️ **Resolution Time:** Within 15 minutes
-🔄 Connecting to Novarsis expert...
-A specialist familiar with your issue is reviewing your case."""
-            return {"status": "found", "message": response}
-        else:
-            return {"status": "not_found", "message": "❌ Novarsis ticket not found. Please check the ticket number."}
-    else:
-        return {"status": "invalid", "message": "Please enter a valid Novarsis ticket (starts with NVS)"}
-
-
-@app.get("/api/session/{session_id}/stats")
-async def get_session_stats(session_id: str):
-    session = get_or_create_session(session_id)
-    return {
-        "total_queries": len(session.chat_history) // 2,
-        "open_tickets": len(session.unresolved_queries),
-        "current_plan": session.current_plan,
-        "unresolved_queries": session.unresolved_queries
+    bot_message = {
+        "role": "assistant",
+        "content": response,
+        "timestamp": datetime.now(),
+        "show_feedback": False
     }
+    session_state["chat_history"].append(bot_message)
+
+    return {"response": response}
 
 
-@app.post("/api/upload-image")
-async def upload_image(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        # Convert to base64 for storage/transmission
-        image_base64 = base64.b64encode(contents).decode('utf-8')
-        return {"image_data": image_base64, "filename": file.filename}
-    except Exception as e:
-        logger.error(f"Error uploading image: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    if not file:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    if file.content_type not in ["image/jpeg", "image/jpg", "image/png"]:
+        raise HTTPException(status_code=400, detail="Only JPG, JPEG, and PNG files are allowed")
+
+    # Read file and convert to base64
+    contents = await file.read()
+    base64_image = base64.b64encode(contents).decode('utf-8')
+
+    return {"image_data": base64_image, "filename": file.filename}
 
 
-@app.post("/api/reset-session")
-async def reset_session(request: dict):
-    session_id = request["session_id"]
-    if session_id in sessions:
-        # Keep tickets and plan, reset everything else
-        tickets = sessions[session_id].support_tickets
-        plan = sessions[session_id].current_plan
-        unresolved = sessions[session_id].unresolved_queries
-        sessions[session_id] = SessionData(
-            current_plan=plan,
-            support_tickets=tickets,
-            unresolved_queries=unresolved
-        )
-    return {"status": "success", "message": "Session reset successfully"}
+@app.get("/api/chat-history")
+async def get_chat_history():
+    return {"chat_history": session_state["chat_history"]}
 
 
-# HTML Template (keeping the same as your original)
-HTML_CONTENT = """
+# Create templates directory if it doesn't exist
+os.makedirs("templates", exist_ok=True)
+
+# Create index.html template
+with open("templates/index.html", "w") as f:
+    f.write("""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Novarsis Support Bot - 24x7 Assistant</title>
+    <title>Novarsis Support Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
+            font-family: 'Inter', sans-serif !important;
+        }
+
+        body {
+            background: #f0f2f5;
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
         }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        .header {
-            background: rgba(255, 255, 255, 0.95);
+
+        .main-container {
+            max-width: 900px;
+            margin: 0 auto;
             padding: 20px;
-            text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        .header h1 {
-            color: #333;
-            font-size: 28px;
+
+        .header-container {
+            background: white;
+            border-radius: 16px;
+            padding: 16px 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            justify-content: center;
-            gap: 10px;
         }
-        .header p {
-            color: #666;
-            margin-top: 5px;
+
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-right: 10px;
         }
-        .container {
-            flex: 1;
-            display: flex;
-            max-width: 1400px;
-            margin: 20px auto;
-            width: 100%;
-            padding: 0 20px;
-            gap: 20px;
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 12px;
+            background: #e8f5e9;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #2e7d32;
+            font-weight: 500;
         }
-        .sidebar {
-            width: 300px;
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
-            padding: 20px;
-            overflow-y: auto;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #4caf50;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: pulse 2s infinite;
         }
-        .main-content {
-            flex: 1;
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
-            display: flex;
-            flex-direction: column;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
         }
+
         .chat-container {
-            flex: 1;
-            padding: 20px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            height: 70vh;
+            min-height: 500px;
             overflow-y: auto;
+            padding: 20px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .message-wrapper {
             display: flex;
-            flex-direction: column;
-            gap: 15px;
+            margin-bottom: 20px;
+            animation: slideIn 0.3s ease-out;
         }
-        .message {
-            display: flex;
-            gap: 10px;
-            animation: fadeIn 0.3s ease-in;
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .message.user {
+
+        .user-message-wrapper {
             justify-content: flex-end;
         }
+
+        .bot-message-wrapper {
+            justify-content: flex-start;
+        }
+
         .message-content {
             max-width: 70%;
             padding: 12px 16px;
-            border-radius: 10px;
+            border-radius: 18px;
+            font-size: 15px;
+            line-height: 1.5;
+            position: relative;
             word-wrap: break-word;
         }
-        .message.user .message-content {
+
+        .user-message {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 5px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .bot-message {
+            background: #f1f3f5;
+            color: #2d3436;
+            border-bottom-left-radius: 5px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            margin: 0 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .user-avatar {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
         }
-        .message.assistant .message-content {
-            background: #f3f4f6;
-            color: #333;
+
+        .bot-avatar {
+            background: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+            color: white;
         }
+
+        .timestamp {
+            font-size: 11px;
+            color: rgba(0,0,0,0.5);
+            margin-top: 6px;
+            font-weight: 400;
+        }
+
+        .user-timestamp {
+            color: rgba(255,255,255,0.8);
+            text-align: right;
+        }
+
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            background: #f1f3f5;
+            border-radius: 18px;
+            width: fit-content;
+            margin-left: 45px;
+            margin-bottom: 20px;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: #95a5a6;
+            border-radius: 50%;
+            margin: 0 3px;
+            animation: typing 1.4s infinite;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: 0s; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-10px); }
+        }
+
         .input-container {
-            padding: 20px;
-            border-top: 1px solid #e5e5e5;
             background: white;
-            border-radius: 0 0 10px 10px;
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            position: sticky;
+            bottom: 20px;
         }
-        .input-wrapper {
+
+        .quick-actions {
             display: flex;
             gap: 10px;
+            margin-bottom: 12px;
         }
-        input[type="text"] {
+
+        .quick-action-btn {
             flex: 1;
-            padding: 12px;
-            border: 2px solid #e5e5e5;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: border-color 0.3s;
-        }
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        button {
-            padding: 12px 24px;
+            padding: 10px 20px;
+            border-radius: 24px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            border-radius: 8px;
-            font-size: 14px;
+            font-weight: 500;
             cursor: pointer;
-            transition: transform 0.2s;
+            transition: all 0.3s ease;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        button:hover {
-            transform: translateY(-2px);
-        }
-        button:active {
-            transform: translateY(0);
-        }
-        .quick-actions {
-            padding: 20px;
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        .quick-action-btn {
-            width: 100%;
-            margin: 8px 0;
-            text-align: left;
-            padding: 12px 16px;
-            background: white;
-            border: 2px solid #e5e5e5;
-            color: #333;
-            transition: all 0.3s;
-        }
+
         .quick-action-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .message-form {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .message-input {
+            flex: 1;
+            border-radius: 24px;
+            border: 1px solid #e0e0e0;
+            padding: 12px 20px;
+            font-size: 15px;
+            background: #f8f9fa;
+            color: #333333;
+            outline: none;
+        }
+
+        .message-input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        }
+
+        .send-btn {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            border-color: transparent;
-        }
-        .metric {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 10px 0;
-            border-left: 4px solid #667eea;
-        }
-        .metric-title {
-            font-size: 12px;
-            color: #666;
-            margin-bottom: 5px;
-        }
-        .metric-value {
-            font-size: 24px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             font-weight: bold;
-            color: #333;
+            transition: all 0.3s ease;
         }
-        .plan-info {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 15px 0;
+
+        .send-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
         }
-        .status-online {
-            color: #10b981;
-            font-weight: bold;
+
+        .attachment-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background-color: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: #667eea;
+            font-size: 18px;
         }
-        .feedback-buttons {
+
+        .attachment-btn:hover {
+            background-color: #f1f3f5;
+            border-color: #667eea;
+            transform: scale(1.05);
+        }
+
+        .attachment-btn.success {
+            background-color: #e8f5e9;
+            color: #4caf50;
+            border-color: #4caf50;
+            pointer-events: none;
+        }
+
+        .feedback-container {
             display: flex;
             gap: 10px;
             margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid #e5e5e5;
+            margin-left: 45px;
         }
+
         .feedback-btn {
-            flex: 1;
-            padding: 8px 16px;
-            font-size: 14px;
-        }
-        .feedback-btn.yes {
-            background: #10b981;
-        }
-        .feedback-btn.no {
-            background: #ef4444;
-        }
-        .upload-area {
-            border: 2px dashed #e5e5e5;
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-            margin: 10px 0;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            border: 1px solid #e0e0e0;
+            background: white;
             cursor: pointer;
-            transition: border-color 0.3s;
+            transition: all 0.2s ease;
         }
-        .upload-area:hover {
+
+        .feedback-btn:hover {
+            background: #f8f9fa;
             border-color: #667eea;
         }
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #f3f3f3;
-            border-radius: 50%;
-            border-top: 3px solid #667eea;
-            animation: spin 1s linear infinite;
+
+        .file-input {
+            display: none;
         }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 6px;
         }
-        .ticket-badge {
-            background: #fbbf24;
-            color: #333;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-            margin-left: 5px;
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .main-container {
+                padding: 10px;
+            }
+
+            .chat-container {
+                height: 65vh;
+                border-radius: 12px;
+                padding: 15px;
+            }
+
+            .message-content {
+                max-width: 80%;
+                font-size: 14px;
+            }
+
+            .input-container {
+                padding: 12px;
+                border-radius: 12px;
+            }
+
+            .header-container {
+                padding: 12px 16px;
+                border-radius: 12px;
+            }
+
+            .quick-actions {
+                flex-direction: column;
+                gap: 8px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>🔍 Novarsis Support Bot</h1>
-        <p>Official 24x7 Support for Novarsis AIO SEO Tool</p>
-    </div>
-    <div class="container">
-        <div class="sidebar">
-            <h3>📊 Support Dashboard</h3>
-            <div class="metric">
-                <div class="metric-title">Total Queries</div>
-                <div class="metric-value" id="totalQueries">0</div>
+    <div class="main-container">
+        <div class="header-container">
+            <div class="logo-section">
+                <span class="logo">🚀 NOVARSIS</span>
+                <span style="color: #95a5a6; font-size: 14px;">AI Support Center</span>
             </div>
-            <div class="metric">
-                <div class="metric-title">Open Tickets</div>
-                <div class="metric-value" id="openTickets">0</div>
+            <div class="status-indicator">
+                <div class="status-dot"></div>
+                <span>Nova is Online</span>
             </div>
-            <div class="plan-info" id="planInfo">
-                <h4>💳 Your Plan</h4>
-                <p id="planName">Loading...</p>
-                <p id="planPrice"></p>
-                <p id="planValidity"></p>
-            </div>
-            <div style="margin-top: 20px;">
-                <h4>🟢 System Status</h4>
-                <p class="status-online">✅ All services operational</p>
-                <small>• SEO Analysis: Online</small><br>
-                <small>• Report Generation: Online</small><br>
-                <small>• API Services: Online</small>
-            </div>
-            <button onclick="resetChat()" style="width: 100%; margin-top: 20px;">
-                🔄 Start New Chat
-            </button>
         </div>
-        <div class="main-content">
-            <div class="chat-container" id="chatContainer">
-                <div class="message assistant">
-                    <div class="message-content">
-                        🔍 <strong>Welcome to Novarsis Support!</strong><br><br>
-                        I'm here to help you with:<br>
-                        • Novarsis tool errors and issues<br>
-                        • SEO analysis problems<br>
-                        • Account and subscription queries<br>
-                        • Technical support for Novarsis features
+
+        <div class="chat-container" id="chat-container">
+            <div class="message-wrapper bot-message-wrapper">
+                <div class="avatar bot-avatar">N</div>
+                <div class="message-content bot-message">
+                    👋 Hi! I'm Nova, your Novarsis AI assistant.<br><br>
+                    How can I assist you today?
+                    <div class="timestamp">
+                        <span id="welcome-timestamp"></span>
                     </div>
                 </div>
             </div>
-            <div class="input-container">
-                <div class="upload-area" onclick="document.getElementById('fileInput').click()">
-                    📸 Click to upload Novarsis error screenshot
-                    <input type="file" id="fileInput" accept="image/*" style="display: none;" onchange="handleFileUpload(event)">
-                </div>
-                <div class="input-wrapper">
-                    <input type="text" id="messageInput" placeholder="Describe your Novarsis issue..." onkeypress="handleKeyPress(event)">
-                    <button onclick="sendMessage()">Send</button>
-                </div>
-            </div>
         </div>
-        <div class="quick-actions">
-            <h3>⚡ Quick Actions</h3>
-            <button class="quick-action-btn" onclick="quickAction('1')">1. Report Novarsis Error 🚨</button>
-            <button class="quick-action-btn" onclick="quickAction('2')">2. Account & Subscription 💳</button>
-            <button class="quick-action-btn" onclick="quickAction('3')">3. Connect with Expert 👥</button>
-            <button class="quick-action-btn" onclick="quickAction('4')">4. Check Ticket Status 📋</button>
-            <button class="quick-action-btn" onclick="quickAction('5')">5. Contact Novarsis 📞</button>
+
+        <div class="input-container">
+            <div class="quick-actions">
+                <button class="quick-action-btn" id="check-ticket-btn">Check ticket status</button>
+                <button class="quick-action-btn" id="connect-expert-btn">Connect with an Expert</button>
+            </div>
+
+            <form class="message-form" id="message-form">
+                <input type="file" id="file-input" class="file-input" accept="image/jpeg,image/jpg,image/png">
+                <div class="attachment-btn" id="attachment-btn">📎</div>
+                <input type="text" class="message-input" id="message-input" placeholder="Type your message...">
+                <button type="submit" class="send-btn">➤</button>
+            </form>
         </div>
     </div>
+
     <script>
-        const sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        let uploadedImageData = null;
-        let waitingForTicket = false;
-        async function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const message = input.value.trim();
-            if (!message) return;
-            // Add user message to chat
-            addMessage('user', message);
-            input.value = '';
-            // Show loading
-            const loadingDiv = addMessage('assistant', '<div class="loading"></div>');
-            try {
-                // Check if waiting for ticket
-                if (waitingForTicket) {
-                    const response = await fetch('/api/check-ticket', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            ticket_number: message,
-                            session_id: sessionId 
-                        })
-                    });
-                    const data = await response.json();
-                    loadingDiv.remove();
-                    addMessage('assistant', data.message);
-                    waitingForTicket = false;
-                } else {
-                    // Normal chat message
-                    const response = await fetch('/api/chat', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            message: message,
-                            session_id: sessionId,
-                            image_data: uploadedImageData
-                        })
-                    });
-                    const data = await response.json();
-                    loadingDiv.remove();
-                    // Add response with feedback buttons if needed
-                    const msgDiv = addMessage('assistant', data.response);
-                    if (data.show_feedback) {
-                        addFeedbackButtons(msgDiv);
-                    }
-                    uploadedImageData = null;
-                }
-                updateStats();
-            } catch (error) {
-                loadingDiv.remove();
-                addMessage('assistant', 'Sorry, I encountered an error. Please try again.');
-            }
+        // Format time function
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
         }
-        async function quickAction(action) {
-            // Add loading
-            const loadingDiv = addMessage('assistant', '<div class="loading"></div>');
+
+        // Current time for welcome message
+        document.addEventListener('DOMContentLoaded', function() {
+            const now = new Date();
+            document.getElementById('welcome-timestamp').textContent = formatTime(now);
+        });
+
+        // Chat container
+        const chatContainer = document.getElementById('chat-container');
+
+        // Message input
+        const messageForm = document.getElementById('message-form');
+        const messageInput = document.getElementById('message-input');
+        const attachmentBtn = document.getElementById('attachment-btn');
+        const fileInput = document.getElementById('file-input');
+
+        // Quick action buttons
+        const checkTicketBtn = document.getElementById('check-ticket-btn');
+        const connectExpertBtn = document.getElementById('connect-expert-btn');
+
+        // File handling
+        let uploadedImageData = null;
+        let uploadedFileName = '';
+
+        attachmentBtn.addEventListener('click', function() {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    uploadedImageData = event.target.result.split(',')[1]; // Get base64 data
+                    uploadedFileName = file.name;
+                    attachmentBtn.classList.add('success');
+                    attachmentBtn.innerHTML = '✓';
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Add message to chat
+        function addMessage(role, content, showFeedback = false) {
+            const messageWrapper = document.createElement('div');
+            messageWrapper.className = `message-wrapper ${role}-message-wrapper`;
+
+            const avatar = document.createElement('div');
+            avatar.className = `avatar ${role}-avatar`;
+            avatar.textContent = role === 'user' ? 'U' : 'N';
+
+            const messageContent = document.createElement('div');
+            messageContent.className = `message-content ${role}-message`;
+            messageContent.innerHTML = content.replace(/\\n/g, '<br>');
+
+            const timestamp = document.createElement('div');
+            timestamp.className = `timestamp ${role}-timestamp`;
+            timestamp.textContent = formatTime(new Date());
+
+            messageContent.appendChild(timestamp);
+
+            if (role === 'user') {
+                messageWrapper.appendChild(messageContent);
+                messageWrapper.appendChild(avatar);
+            } else {
+                messageWrapper.appendChild(avatar);
+                messageWrapper.appendChild(messageContent);
+
+                // Add feedback buttons if needed
+                if (showFeedback) {
+                    const feedbackContainer = document.createElement('div');
+                    feedbackContainer.className = 'feedback-container';
+
+                    const helpfulBtn = document.createElement('button');
+                    helpfulBtn.className = 'feedback-btn';
+                    helpfulBtn.textContent = '👍 Helpful';
+                    helpfulBtn.onclick = () => sendFeedback('yes');
+
+                    const notHelpfulBtn = document.createElement('button');
+                    notHelpfulBtn.className = 'feedback-btn';
+                    notHelpfulBtn.textContent = '👎 Not Helpful';
+                    notHelpfulBtn.onclick = () => sendFeedback('no');
+
+                    feedbackContainer.appendChild(helpfulBtn);
+                    feedbackContainer.appendChild(notHelpfulBtn);
+                    messageWrapper.appendChild(feedbackContainer);
+                }
+            }
+
+            chatContainer.appendChild(messageWrapper);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Show typing indicator
+        function showTypingIndicator() {
+            const typingIndicator = document.createElement('div');
+            typingIndicator.className = 'typing-indicator';
+            typingIndicator.innerHTML = `
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+            `;
+            chatContainer.appendChild(typingIndicator);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return typingIndicator;
+        }
+
+        // Send message
+        async function sendMessage(message, imageData = null) {
+            // Add user message
+            addMessage('user', message);
+
+            // Show typing indicator
+            const typingIndicator = showTypingIndicator();
+
             try {
-                const response = await fetch('/api/quick-action', {
+                // Send to API
+                const response = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        action: action,
-                        session_id: sessionId 
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        image_data: imageData
                     })
                 });
+
                 const data = await response.json();
-                loadingDiv.remove();
-                addMessage('assistant', data.response);
-                if (data.need_ticket || data.check_status) {
-                    waitingForTicket = true;
+
+                // Remove typing indicator
+                typingIndicator.remove();
+
+                // Add bot response
+                addMessage('assistant', data.response, data.show_feedback);
+
+                // Reset attachment
+                if (uploadedImageData) {
+                    attachmentBtn.classList.remove('success');
+                    attachmentBtn.innerHTML = '📎';
+                    uploadedImageData = null;
+                    uploadedFileName = '';
+                    fileInput.value = '';
                 }
-                updateStats();
+
             } catch (error) {
-                loadingDiv.remove();
+                console.error('Error sending message:', error);
+                typingIndicator.remove();
                 addMessage('assistant', 'Sorry, I encountered an error. Please try again.');
             }
         }
-        function addMessage(role, content) {
-            const chatContainer = document.getElementById('chatContainer');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${role}`;
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'message-content';
-            contentDiv.innerHTML = content.replace(/\\n/g, '<br>');
-            messageDiv.appendChild(contentDiv);
-            chatContainer.appendChild(messageDiv);
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-            return messageDiv;
-        }
-        function addFeedbackButtons(messageDiv) {
-            const feedbackDiv = document.createElement('div');
-            feedbackDiv.className = 'feedback-buttons';
-            feedbackDiv.innerHTML = `
-                <button class="feedback-btn yes" onclick="sendFeedback('yes')">✅ Yes, Resolved</button>
-                <button class="feedback-btn no" onclick="sendFeedback('no')">❌ No, Need Help</button>
-            `;
-            messageDiv.querySelector('.message-content').appendChild(feedbackDiv);
-        }
+
+        // Send feedback
         async function sendFeedback(feedback) {
+            const messageIndex = document.querySelectorAll('.message-wrapper').length - 1;
+
             try {
                 const response = await fetch('/api/feedback', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
                         feedback: feedback,
-                        session_id: sessionId 
+                        message_index: messageIndex
                     })
                 });
+
                 const data = await response.json();
-                if (feedback === 'no' && data.ticket_id) {
-                    addMessage('assistant', data.message + `<span class="ticket-badge">${data.ticket_id}</span>`);
-                } else {
-                    addMessage('assistant', data.message);
-                }
-                updateStats();
+                addMessage('assistant', data.response);
+
             } catch (error) {
-                addMessage('assistant', 'Sorry, I encountered an error processing your feedback.');
+                console.error('Error sending feedback:', error);
             }
         }
-        async function handleFileUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                // Convert to base64
-                uploadedImageData = e.target.result.split(',')[1];
-                addMessage('user', `📸 Uploaded screenshot: ${file.name}`);
-            };
-            reader.readAsDataURL(file);
-        }
-        async function updateStats() {
-            try {
-                const response = await fetch(`/api/session/${sessionId}/stats`);
-                const data = await response.json();
-                document.getElementById('totalQueries').textContent = data.total_queries;
-                document.getElementById('openTickets').textContent = data.open_tickets;
-                if (data.current_plan) {
-                    document.getElementById('planName').textContent = data.current_plan.name;
-                    document.getElementById('planPrice').textContent = data.current_plan.price;
-                    document.getElementById('planValidity').textContent = data.current_plan.validity;
-                }
-            } catch (error) {
-                console.error('Error updating stats:', error);
+
+        // Handle form submission
+        messageForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const message = messageInput.value.trim();
+            if (message) {
+                await sendMessage(message, uploadedImageData);
+                messageInput.value = '';
             }
-        }
-        async function resetChat() {
+        });
+
+        // Handle quick action buttons
+        checkTicketBtn.addEventListener('click', async function() {
             try {
-                await fetch('/api/reset-session', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: sessionId })
+                const response = await fetch('/api/check-ticket-status', {
+                    method: 'POST'
                 });
-                // Clear chat container
-                const chatContainer = document.getElementById('chatContainer');
-                chatContainer.innerHTML = `
-                    <div class="message assistant">
-                        <div class="message-content">
-                            🔍 <strong>Welcome to Novarsis Support!</strong><br><br>
-                            I'm here to help you with:<br>
-                            • Novarsis tool errors and issues<br>
-                            • SEO analysis problems<br>
-                            • Account and subscription queries<br>
-                            • Technical support for Novarsis features
-                        </div>
-                    </div>
-                `;
-                updateStats();
+
+                const data = await response.json();
+                addMessage('assistant', data.response);
+
             } catch (error) {
-                console.error('Error resetting chat:', error);
+                console.error('Error checking ticket status:', error);
             }
-        }
-        function handleKeyPress(event) {
-            if (event.key === 'Enter') {
-                sendMessage();
+        });
+
+        connectExpertBtn.addEventListener('click', async function() {
+            try {
+                const response = await fetch('/api/connect-expert', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+                addMessage('assistant', data.response);
+
+            } catch (error) {
+                console.error('Error connecting with expert:', error);
             }
-        }
-        // Initialize stats on load
-        window.onload = function() {
-            updateStats();
-        }
+        });
+
+        // Handle Enter key in message input
+        messageInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                messageForm.dispatchEvent(new Event('submit'));
+            }
+        });
     </script>
 </body>
 </html>
-"""
+    """)
 
-# Run the server
 if __name__ == "__main__":
-    print("🚀 Starting Novarsis Support Bot API...")
-    print("📍 Open http://localhost:8000 in your browser")
-    print("📚 API docs available at http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)
