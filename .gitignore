@@ -1,22 +1,18 @@
-# Byte-compiled / Python caches
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.sqlite3
 
-# Env files
+# Virtualenv
+venv/
 .env
-.env.local
-*.pem
-*.key
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Editor
+# IDE
 .vscode/
 .idea/
+
+# System
+.DS_Store
+*.log
