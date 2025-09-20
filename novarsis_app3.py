@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Novarsis Support Center", description="AI Support Assistant for Novarsis SEO Tool")
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBMCGZFLUH3E_atf1mdc2clXw5lnE0ypyo")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBrpsGuAmfZC6tW2__ck0QUQTv7MhlKVgw")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Gemini Flash 2.0 model
@@ -57,46 +57,46 @@ except Exception as e:
     reference_embedding = None
 
 # Constants
-WHATSAPP_NUMBER = "+91-8962810180"
+WHATSAPP_NUMBER = "+91-9999999999"
 SUPPORT_EMAIL = "support@novarsis.tech"
 
 # Enhanced System Prompt
 SYSTEM_PROMPT = """You are Nova, the official AI support assistant for Novarsis AIO SEO Tool.
 
 PERSONALITY:
-- Professional yet friendly
-- Proactive in offering solutions
-- Empathetic to user frustrations
-- Clear and concise in explanations
-- Conversational and natural tone
-- Uses simple, everyday language
-- Adds small friendly phrases like "Got it", "No worries", "Let's fix this together"
-- Can use light humor where appropriate, while staying professional
+- Natural and conversational like a human
+- Friendly and approachable
+- Brief but complete responses
+- Polite and professional
+
+INTRO RESPONSES:
+- Who are you? → "I'm Nova, your AI assistant for Novarsis SEO Tool. I help users with SEO analysis, reports, account issues, and technical support."
+- How can you help? → "I can help you with SEO website analysis, generating reports, fixing errors, managing subscriptions, and troubleshooting any Novarsis tool issues."
+- What can you do? → "I assist with all Novarsis features - SEO audits, competitor analysis, keyword tracking, technical issues, billing, and more."
 
 SCOPE:
-You ONLY help with Novarsis-related queries:
- SEO analysis issues and errors
- Account and subscription management
-Technical troubleshooting
-Feature explanations and tutorials
-Billing and payment issues
-Report generation problems
-API and integration support
-Performance optimization tips
+Answer ALL questions naturally, but stay within Novarsis context:
+• Greetings → Respond naturally (Hello! How can I help you today?)
+• About yourself → Explain your role as Novarsis assistant
+• Capabilities → List what you can help with
+• Tool features → Explain Novarsis features
+• Technical help → Provide solutions
+• Account/billing → Assist with subscriptions
 
-For non-Novarsis queries, politely redirect:
-"I specialize in Novarsis SEO Tool support. For this query, I'd recommend [appropriate resource]. 
-Is there anything about Novarsis I can help you with instead?"
+ONLY REDIRECT for completely unrelated topics like:
+- Cooking recipes, travel advice, general knowledge
+- Non-SEO tools or competitors
+- Personal advice unrelated to SEO
+
+For unrelated queries, politely say:
+"Sorry, I only help with Novarsis SEO Tool.
+Please let me know if you have any SEO tool related questions?"
 
 RESPONSE STYLE:
-1. Acknowledge the issue in a natural way (like "Got it, I see what's happening here")
-2. Provide step-by-step solutions in simple language
-3. Offer alternatives if needed, explained in plain words
-4. Confirm understanding or ask if further help is required ("Did that help?")
-
-Use emojis sparingly for friendliness: ✅ ❌ 💡 🔧 📊 🚀
-Also use friendly fillers occasionally like 🙂 👍 🙌
-Format responses with clear sections and bullet points."""
+- Natural conversation flow
+- Answer directly without overthinking
+- 2-4 lines for simple queries
+- Use simple, everyday language"""
 
 # Context-based quick reply suggestions
 QUICK_REPLY_SUGGESTIONS = {
@@ -195,12 +195,32 @@ def get_context_suggestions(message: str) -> list:
         return []
 
 
-# Novarsis Keywords
+# Novarsis Keywords - expanded for better detection
 NOVARSIS_KEYWORDS = [
     'novarsis', 'seo', 'website analysis', 'meta tags', 'page structure', 'link analysis',
     'seo check', 'seo report', 'subscription', 'account', 'billing', 'plan', 'premium',
     'starter', 'error', 'bug', 'issue', 'problem', 'not working', 'failed', 'crash',
-    'login', 'password', 'analysis', 'report', 'dashboard', 'settings', 'integration'
+    'login', 'password', 'analysis', 'report', 'dashboard', 'settings', 'integration',
+    'google', 'api', 'website', 'url', 'scan', 'audit', 'optimization', 'mobile', 'speed',
+    'performance', 'competitor', 'ranking', 'keywords', 'backlinks', 'technical seo',
+    'canonical', 'schema', 'sitemap', 'robots.txt', 'crawl', 'index', 'search console',
+    'analytics', 'traffic', 'organic', 'serp'
+]
+
+# Casual/intro keywords that should be allowed
+CAUSAL_ALLOWED = [
+    'hello', 'hi', 'hey', 'who are you', 'what are you', 'what can you do', 
+    'how can you help', 'help me', 'assist', 'support', 'thanks', 'thank you',
+    'bye', 'goodbye', 'good morning', 'good afternoon', 'good evening',
+    'yes', 'no', 'okay', 'ok', 'sure', 'please', 'sorry'
+]
+
+# Clearly unrelated topics that should be filtered
+UNRELATED_TOPICS = [
+    'recipe', 'cooking', 'food', 'biryani', 'pizza', 'travel', 'vacation',
+    'movie', 'song', 'music', 'game', 'sports', 'cricket', 'football',
+    'weather', 'politics', 'news', 'stock', 'crypto', 'bitcoin',
+    'medical', 'doctor', 'medicine', 'disease', 'health' 
 ]
 
 # Greeting keywords
@@ -227,6 +247,146 @@ except Exception as e:
 
     templates = SimpleTemplates("templates")
 
+# FAST MCP - Fast Adaptive Semantic Transfer with Memory Context Protocol
+class FastMCP:
+    def __init__(self):
+        self.conversation_memory = []  # Full conversation memory
+        self.context_window = []  # Recent context (last 10 messages)
+        self.user_intent = None  # Current user intent
+        self.topic_stack = []  # Stack of conversation topics
+        self.entities = {}  # Named entities extracted
+        self.user_profile = {
+            "name": None,
+            "plan": None,
+            "issues_faced": [],
+            "preferred_style": "concise",
+            "interaction_count": 0
+        }
+        self.conversation_state = {
+            "expecting_response": None,  # What type of response we're expecting
+            "last_question": None,  # Last question asked by bot
+            "pending_action": None,  # Any pending action
+            "emotional_tone": "neutral"  # User's emotional state
+        }
+    
+    def update_context(self, role, message):
+        """Update conversation context with new message"""
+        entry = {
+            "role": role,
+            "content": message,
+            "timestamp": datetime.now(),
+            "intent": self.extract_intent(message) if role == "user" else None
+        }
+        
+        self.conversation_memory.append(entry)
+        self.context_window.append(entry)
+        
+        # Keep context window to last 10 messages
+        if len(self.context_window) > 10:
+            self.context_window.pop(0)
+        
+        if role == "user":
+            self.analyze_user_message(message)
+        else:
+            self.analyze_bot_response(message)
+    
+    def extract_intent(self, message):
+        """Extract user intent from message"""
+        message_lower = message.lower()
+        
+        # Intent patterns
+        if any(word in message_lower for word in ['how', 'what', 'where', 'when', 'why']):
+            return "question"
+        elif any(word in message_lower for word in ['yes', 'yeah', 'sure', 'okay', 'ok', 'yep', 'yup']):
+            return "confirmation"
+        elif any(word in message_lower for word in ['no', 'nope', 'nah', 'not']):
+            return "denial"
+        elif any(word in message_lower for word in ['help', 'assist', 'support']):
+            return "help_request"
+        elif any(word in message_lower for word in ['error', 'issue', 'problem', 'broken', 'not working']):
+            return "problem_report"
+        elif any(word in message_lower for word in ['thanks', 'thank you', 'appreciate']):
+            return "gratitude"
+        elif any(word in message_lower for word in ['more', 'elaborate', 'explain', 'detail']):
+            return "elaboration_request"
+        else:
+            return "statement"
+    
+    def analyze_user_message(self, message):
+        """Analyze user message for context and emotion"""
+        message_lower = message.lower()
+        
+        # Update emotional tone
+        if any(word in message_lower for word in ['urgent', 'asap', 'immediately', 'quickly']):
+            self.conversation_state["emotional_tone"] = "urgent"
+        elif any(word in message_lower for word in ['frustrated', 'annoyed', 'angry', 'upset']):
+            self.conversation_state["emotional_tone"] = "frustrated"
+        elif any(word in message_lower for word in ['please', 'thanks', 'appreciate']):
+            self.conversation_state["emotional_tone"] = "polite"
+        
+        # Extract entities
+        if 'website' in message_lower or 'site' in message_lower:
+            self.entities['subject'] = 'website'
+        if 'seo' in message_lower:
+            self.entities['subject'] = 'seo'
+        if 'report' in message_lower:
+            self.entities['subject'] = 'report'
+        
+        self.user_profile["interaction_count"] += 1
+    
+    def analyze_bot_response(self, message):
+        """Track what the bot asked or offered"""
+        message_lower = message.lower()
+        
+        if '?' in message:
+            self.conversation_state["last_question"] = message
+            self.conversation_state["expecting_response"] = "answer"
+        
+        if 'need more help' in message_lower or 'need help' in message_lower:
+            self.conversation_state["expecting_response"] = "help_confirmation"
+        
+        if 'try these steps' in message_lower or 'follow these' in message_lower:
+            self.conversation_state["expecting_response"] = "feedback_on_solution"
+    
+    def get_context_prompt(self):
+        """Generate context-aware prompt for AI"""
+        context_parts = []
+        
+        # Add conversation history
+        if self.context_window:
+            context_parts.append("=== Conversation Context ===")
+            for entry in self.context_window[-5:]:  # Last 5 messages
+                role = "User" if entry["role"] == "user" else "Assistant"
+                context_parts.append(f"{role}: {entry['content']}")
+        
+        # Add conversation state
+        if self.conversation_state["expecting_response"]:
+            context_parts.append(f"\n[Expecting: {self.conversation_state['expecting_response']}]")
+        
+        if self.conversation_state["emotional_tone"] != "neutral":
+            context_parts.append(f"[User tone: {self.conversation_state['emotional_tone']}]")
+        
+        if self.entities:
+            context_parts.append(f"[Current topic: {', '.join(self.entities.values())}]")
+        
+        return "\n".join(context_parts)
+    
+    def should_filter_novarsis(self, message):
+        """Determine if Novarsis filter should be applied"""
+        # Don't filter if we're expecting a response to our question
+        if self.conversation_state["expecting_response"] in ["help_confirmation", "answer", "feedback_on_solution"]:
+            return False
+        
+        # Don't filter for contextual responses
+        intent = self.extract_intent(message)
+        if intent in ["confirmation", "denial", "elaboration_request"]:
+            return False
+        
+        return True
+
+# Initialize FAST MCP
+fast_mcp = FastMCP()
+
 # Global session state (in a real app, you'd use Redis or a database)
 session_state = {
     "chat_history": [],
@@ -242,7 +402,8 @@ session_state = {
     "uploaded_file": None,
     "checking_ticket_status": False,
     "intro_given": False,
-    "last_user_query": ""
+    "last_user_query": "",
+    "fast_mcp": fast_mcp  # Add FAST MCP to session
 }
 
 # Initialize current plan
@@ -301,8 +462,25 @@ def is_greeting(query: str) -> bool:
     query_lower = query.lower().strip()
     return any(greeting in query_lower for greeting in GREETING_KEYWORDS)
 
+def is_casual_allowed(query: str) -> bool:
+    """Check if it's a casual/intro question that should be allowed"""
+    query_lower = query.lower().strip()
+    return any(word in query_lower for word in CAUSAL_ALLOWED)
+
+def is_clearly_unrelated(query: str) -> bool:
+    """Check if query is clearly unrelated to our tool"""
+    query_lower = query.lower().strip()
+    return any(topic in query_lower for topic in UNRELATED_TOPICS)
 
 def is_novarsis_related(query: str) -> bool:
+    # First check if it's a casual/intro question - always allow these
+    if is_casual_allowed(query):
+        return True
+    
+    # Check if it's clearly unrelated - always filter these
+    if is_clearly_unrelated(query):
+        return False
+    
     # Only use semantic filtering if embedding model was successfully initialized
     if reference_embedding is not None and embedding_model is not None:
         try:
@@ -330,31 +508,42 @@ I'm here to help you with any questions or issues you might have regarding our S
 How can I assist you today? Feel free to ask any questions about Novarsis!"""
 
 
-def get_ai_response(user_input: str, image_data: Optional[str] = None) -> str:
+def get_ai_response(user_input: str, image_data: Optional[str] = None, chat_history: list = None) -> str:
     if not model:
         return "I apologize, but I'm having trouble connecting to my AI service. Please try again in a moment, or click 'Connect to Human' for immediate assistance."
 
     try:
-        if not is_novarsis_related(user_input):
-            return """I understand you need help, but I specialize specifically in Novarsis SEO Tool support. 
-
-For your query, you might want to try:
-• General tech support forums
-• Product-specific documentation
-• Or Google search for more information
-
-Is there anything about Novarsis SEO Tool I can help you with? Such as:
-• SEO analysis issues
-• Account management
-• Report generation
-• Technical problems"""
+        # Get FAST MCP instance
+        mcp = session_state.get("fast_mcp", FastMCP())
+        
+        # Update MCP with user input
+        mcp.update_context("user", user_input)
+        
+        # Check if we should apply Novarsis filter
+        should_filter = mcp.should_filter_novarsis(user_input)
+        
+        # Only filter if MCP says we should
+        if should_filter and not is_novarsis_related(user_input):
+            return """Sorry, I only help with Novarsis SEO Tool.
+            
+Please let me know if you have any SEO tool related questions?"""
+        
+        # Get context from MCP
+        context = mcp.get_context_prompt()
+        
+        # Enhanced system prompt based on emotional tone
+        enhanced_prompt = SYSTEM_PROMPT
+        if mcp.conversation_state["emotional_tone"] == "urgent":
+            enhanced_prompt += "\n[User is urgent - provide immediate, actionable solutions]"
+        elif mcp.conversation_state["emotional_tone"] == "frustrated":
+            enhanced_prompt += "\n[User is frustrated - be extra helpful and empathetic]"
 
         if image_data:
-            prompt = f"{SYSTEM_PROMPT}\n\nUser query with screenshot: {user_input}"
+            prompt = f"{enhanced_prompt}\n\n{context}\n\nUser query with screenshot: {user_input}"
             image = Image.open(io.BytesIO(base64.b64decode(image_data)))
             response = model.generate_content([prompt, image])
         else:
-            prompt = f"{SYSTEM_PROMPT}\n\nUser query: {user_input}"
+            prompt = f"{enhanced_prompt}\n\n{context}\n\nUser query: {user_input}"
             response = model.generate_content(prompt)
 
         # Remove ** symbols from the response
@@ -432,7 +621,7 @@ async def chat(request: ChatRequest):
     # Store last user query for "Connect with an Expert"
     session_state["last_user_query"] = request.message
 
-    # Get AI response
+    # Get AI response with chat history for context
     time.sleep(0.5)  # Simulate thinking time
 
     if session_state["checking_ticket_status"]:
@@ -462,9 +651,13 @@ Our team is working on your issue. You'll receive a notification when there's an
         session_state["intro_given"] = True
         show_feedback = True  # Changed to True
     else:
-        response = get_ai_response(request.message, request.image_data)
+        response = get_ai_response(request.message, request.image_data, session_state["chat_history"])
         show_feedback = True  # Already True
 
+    # Update FAST MCP with bot response
+    if "fast_mcp" in session_state:
+        session_state["fast_mcp"].update_context("assistant", response)
+    
     # Add bot response to chat history
     bot_message = {
         "role": "assistant",
