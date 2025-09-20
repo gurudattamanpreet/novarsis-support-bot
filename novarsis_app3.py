@@ -18,6 +18,7 @@ from typing import Optional, List, Dict
 import hashlib
 import html
 import uvicorn
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Novarsis Support Center", description="AI Support Assistant for Novarsis SEO Tool")
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBrpsGuAmfZC6tW2__ck0QUQTv7MhlKVgw")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBMCGZFLUH3E_atf1mdc2clXw5lnE0ypyo")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Gemini Flash 2.0 model
@@ -67,30 +68,132 @@ PERSONALITY:
 - Proactive in offering solutions
 - Empathetic to user frustrations
 - Clear and concise in explanations
+- Conversational and natural tone
+- Uses simple, everyday language
+- Adds small friendly phrases like "Got it", "No worries", "Let's fix this together"
+- Can use light humor where appropriate, while staying professional
 
 SCOPE:
 You ONLY help with Novarsis-related queries:
-✓ SEO analysis issues and errors
-✓ Account and subscription management
-✓ Technical troubleshooting
-✓ Feature explanations and tutorials
-✓ Billing and payment issues
-✓ Report generation problems
-✓ API and integration support
-✓ Performance optimization tips
+ SEO analysis issues and errors
+ Account and subscription management
+Technical troubleshooting
+Feature explanations and tutorials
+Billing and payment issues
+Report generation problems
+API and integration support
+Performance optimization tips
 
 For non-Novarsis queries, politely redirect:
 "I specialize in Novarsis SEO Tool support. For this query, I'd recommend [appropriate resource]. 
 Is there anything about Novarsis I can help you with instead?"
 
 RESPONSE STYLE:
-1. Acknowledge the issue
-2. Provide step-by-step solutions
-3. Offer alternatives if needed
-4. Ask if further help is required
+1. Acknowledge the issue in a natural way (like "Got it, I see what's happening here")
+2. Provide step-by-step solutions in simple language
+3. Offer alternatives if needed, explained in plain words
+4. Confirm understanding or ask if further help is required ("Did that help?")
 
 Use emojis sparingly for friendliness: ✅ ❌ 💡 🔧 📊 🚀
+Also use friendly fillers occasionally like 🙂 👍 🙌
 Format responses with clear sections and bullet points."""
+
+# Context-based quick reply suggestions
+QUICK_REPLY_SUGGESTIONS = {
+    "initial": [
+        "How do I analyze my website SEO?",
+        "Check my subscription status",
+        "I'm getting an error message",
+        "Generate SEO report",
+        "Compare pricing plans",
+        "Check ticket status",
+        "Connect with an Expert"
+    ],
+    "seo_analysis": [
+        "How to improve my SEO score?",
+        "What are meta tags?",
+        "Check page load speed",
+        "Analyze competitor websites",
+        "Mobile optimization tips"
+    ],
+    "account": [
+        "Upgrade my plan",
+        "Reset my password",
+        "View billing history",
+        "Cancel subscription",
+        "Update payment method"
+    ],
+    "technical": [
+        "API integration help",
+        "Report not generating",
+        "Login issues",
+        "Data sync problems",
+        "Browser compatibility",
+        "Connect with an Expert"
+    ],
+    "report": [
+        "Schedule automatic reports",
+        "Export to PDF",
+        "Share report with team",
+        "Customize report sections",
+        "Historical data comparison"
+    ],
+    "error": [
+        "Website not loading",
+        "Analysis stuck at 0%",
+        "404 error on dashboard",
+        "Payment failed",
+        "Can't access reports",
+        "Connect with an Expert"
+    ],
+    "pricing": [
+        "What's included in Premium?",
+        "Student discount available?",
+        "Annual vs monthly billing",
+        "Team plans pricing",
+        "Free trial details"
+    ]
+}
+
+
+def get_context_suggestions(message: str) -> list:
+    """Get relevant quick reply suggestions based on user's input context."""
+    if not message or len(message.strip()) < 2:
+        return QUICK_REPLY_SUGGESTIONS["initial"]
+
+    message_lower = message.lower().strip()
+
+    # Return empty if message is very short
+    if len(message_lower) < 3:
+        return []
+
+    # Check for specific actions first
+    if any(word in message_lower for word in ['ticket', 'status', 'track', 'nvs']):
+        return ["Check ticket status", "Connect with an Expert", "View all tickets", "Create new ticket"]
+    elif any(word in message_lower for word in ['expert', 'human', 'agent', 'support', 'help']):
+        return ["Connect with an Expert", "Check ticket status", "Call support", "Email support"]
+    # Check for keywords and return appropriate suggestions
+    elif any(
+            word in message_lower for word in ['seo', 'analysis', 'analyze', 'score', 'optimization', 'meta', 'crawl']):
+        return QUICK_REPLY_SUGGESTIONS["seo_analysis"]
+    elif any(word in message_lower for word in
+             ['account', 'subscription', 'plan', 'billing', 'payment', 'upgrade', 'cancel']):
+        return QUICK_REPLY_SUGGESTIONS["account"]
+    elif any(word in message_lower for word in
+             ['error', 'issue', 'problem', 'not working', 'failed', 'stuck', 'broken']):
+        return QUICK_REPLY_SUGGESTIONS["error"]
+    elif any(word in message_lower for word in ['report', 'export', 'pdf', 'schedule', 'download']):
+        return QUICK_REPLY_SUGGESTIONS["report"]
+    elif any(word in message_lower for word in ['api', 'integration', 'technical', 'login', 'password']):
+        return QUICK_REPLY_SUGGESTIONS["technical"]
+    elif any(word in message_lower for word in ['price', 'pricing', 'cost', 'plan', 'cheap', 'expensive', 'free']):
+        return QUICK_REPLY_SUGGESTIONS["pricing"]
+    elif any(word in message_lower for word in ['how', 'what', 'why', 'when', 'where']):
+        # For question words, show initial helpful suggestions
+        return QUICK_REPLY_SUGGESTIONS["initial"]
+    else:
+        return []
+
 
 # Novarsis Keywords
 NOVARSIS_KEYWORDS = [
@@ -157,7 +260,7 @@ class Message(BaseModel):
     role: str
     content: str
     timestamp: datetime
-    show_feedback: bool = False
+    show_feedback: bool = True  # Changed default to True
 
 
 class ChatRequest(BaseModel):
@@ -222,42 +325,7 @@ def is_novarsis_related(query: str) -> bool:
 def get_intro_response() -> str:
     return """Hello! I'm Nova, the official AI support assistant for Novarsis AIO SEO Tool. 
 
-I'm here to help you with any questions or issues you might have regarding our SEO tool. Here's what I can assist you with:
-
-🔍 **SEO Analysis Issues**
-• Website analysis problems
-• Meta tags optimization
-• Page structure issues
-• Link analysis errors
-• SEO check failures
-• Report generation problems
-
-👤 **Account & Subscription Management**
-• Login and password issues
-• Account settings
-• Subscription upgrades/downgrades
-• Billing and payment inquiries
-• Plan features comparison
-
-🛠️ **Technical Troubleshooting**
-• Error messages and bugs
-• Performance issues
-• Integration problems
-• API connectivity
-• Data synchronization
-
-📊 **Feature Explanations & Tutorials**
-• How to use specific features
-• Understanding your SEO reports
-• Competitor analysis
-• Keyword research
-• Technical SEO audit
-
-💡 **Performance Optimization Tips**
-• Improving website speed
-• Mobile optimization
-• Enhancing search rankings
-• Building quality backlinks
+I'm here to help you with any questions or issues you might have regarding our SEO tool.
 
 How can I assist you today? Feel free to ask any questions about Novarsis!"""
 
@@ -275,7 +343,7 @@ For your query, you might want to try:
 • Product-specific documentation
 • Or Google search for more information
 
-Is there anything about **Novarsis SEO Tool** I can help you with? Such as:
+Is there anything about Novarsis SEO Tool I can help you with? Such as:
 • SEO analysis issues
 • Account management
 • Report generation
@@ -289,7 +357,41 @@ Is there anything about **Novarsis SEO Tool** I can help you with? Such as:
             prompt = f"{SYSTEM_PROMPT}\n\nUser query: {user_input}"
             response = model.generate_content(prompt)
 
-        return response.text
+        # Remove ** symbols from the response
+        response_text = response.text.replace("**", "")
+        # Remove any repetitive intro lines if present
+        response_text = re.sub(r'^(Hey there[!,. ]*I\'?m Nova.*?assistant[.!]?\s*)', '', response_text, flags=re.IGNORECASE).strip()
+        # Keep alphanumeric, spaces, common punctuation, newlines, and bullet/section characters
+        response_text = re.sub(r'[^a-zA-Z0-9 .,!?:;()\n•-]', '', response_text)
+
+        # --- Formatting improvements for presentability ---
+        # Normalize multiple spaces
+        response_text = re.sub(r'\s+', ' ', response_text)
+        # Ensure proper paragraph separation
+        response_text = re.sub(r'([.!?])\s', r'\1\n\n', response_text)
+        # Convert dashes to bullets if they appear at the start of a line
+        response_text = re.sub(r'^\s*-\s+', '• ', response_text, flags=re.MULTILINE)
+        # --- End formatting improvements ---
+
+        # Format numbered lists: number stays with title, add a blank line after each block
+        response_text = re.sub(r'\n?(\d+\.)\s*', r'\n\n\1 ', response_text)  # Ensure number+title on same line
+        # Add spacing after list item sentences for readability
+        response_text = re.sub(r'(\n\d+\. [^\n]+)(?=\n\d+\.)', r'\1\n', response_text)
+        response_text = re.sub(r'(•)', r'\n\1', response_text)       # Bullets
+        response_text = re.sub(r'(Step\s+\d+)', r'\n\1', response_text)  # Steps
+        response_text = re.sub(r'(Tip:)', r'\n\1', response_text)        # Tips
+        response_text = re.sub(r'(Solution:)', r'\n\1', response_text)   # Solutions
+        response_text = re.sub(r'(Alternative:)', r'\n\1', response_text) # Alternatives
+
+        # --- Final cleanup for unnecessary spaces and gaps ---
+        # Remove spaces before punctuation
+        response_text = re.sub(r'\s+([.,!?;:])', r'\1', response_text)
+        # Remove extra spaces at line beginnings
+        response_text = re.sub(r'^\s+', '', response_text, flags=re.MULTILINE)
+        # Collapse multiple blank lines into max 2
+        response_text = re.sub(r'\n{3,}', '\n\n', response_text)
+
+        return response_text.strip()
     except Exception as e:
         logger.error(f"Error generating AI response: {str(e)}")
         return "I encountered an issue processing your request. Please try rephrasing your question or connect with our human support team for assistance."
@@ -339,13 +441,13 @@ async def chat(request: ChatRequest):
         if ticket_id.startswith("NVS") and len(ticket_id) > 3:
             if ticket_id in session_state["support_tickets"]:
                 ticket = session_state["support_tickets"][ticket_id]
-                response = f"""🎫 **Ticket Details:**
+                response = f"""🎫 Ticket Details:
 
-**Ticket ID:** {ticket_id}
-**Status:** {ticket['status']}
-**Priority:** {ticket['priority']}
-**Created:** {ticket['timestamp'].strftime('%Y-%m-%d %H:%M')}
-**Query:** {ticket['query']}
+Ticket ID: {ticket_id}
+Status: {ticket['status']}
+Priority: {ticket['priority']}
+Created: {ticket['timestamp'].strftime('%Y-%m-%d %H:%M')}
+Query: {ticket['query']}
 
 Our team is working on your issue. You'll receive a notification when there's an update."""
             else:
@@ -354,14 +456,14 @@ Our team is working on your issue. You'll receive a notification when there's an
             response = "⚠️ Please enter a valid ticket ID (e.g., NVS12345)."
 
         session_state["checking_ticket_status"] = False
-        show_feedback = False
+        show_feedback = True  # Changed to True
     elif is_greeting(request.message):
         response = get_intro_response()
         session_state["intro_given"] = True
-        show_feedback = False
+        show_feedback = True  # Changed to True
     else:
         response = get_ai_response(request.message, request.image_data)
-        show_feedback = True
+        show_feedback = True  # Already True
 
     # Add bot response to chat history
     bot_message = {
@@ -372,6 +474,7 @@ Our team is working on your issue. You'll receive a notification when there's an
     }
     session_state["chat_history"].append(bot_message)
 
+    # Don't send suggestions with response anymore since we're doing real-time
     return {"response": response, "show_feedback": show_feedback}
 
 
@@ -384,7 +487,7 @@ async def check_ticket_status():
         "role": "assistant",
         "content": response,
         "timestamp": datetime.now(),
-        "show_feedback": False
+        "show_feedback": True  # Changed to True
     }
     session_state["chat_history"].append(bot_message)
 
@@ -400,9 +503,9 @@ async def connect_expert():
         })
         response = f"""I've created a priority support ticket for you:
 
-🎫 **Ticket ID:** {ticket_id}
-📱 **Status:** Escalated to Human Support
-⏱️ **Response Time:** Within 15 minutes
+🎫 Ticket ID: {ticket_id}
+📱 Status: Escalated to Human Support
+⏱️ Response Time: Within 15 minutes
 
 Our expert team has been notified and will reach out to you shortly via:
 • In-app chat
@@ -417,7 +520,7 @@ You can check your ticket status anytime by typing 'ticket {ticket_id}'"""
         "role": "assistant",
         "content": response,
         "timestamp": datetime.now(),
-        "show_feedback": False
+        "show_feedback": True  # Changed to True
     }
     session_state["chat_history"].append(bot_message)
 
@@ -430,9 +533,9 @@ async def feedback(request: FeedbackRequest):
         ticket_id = save_unresolved_query(session_state["current_query"])
         response = f"""I understand this didn't fully resolve your issue. I've created a priority support ticket for you:
 
-🎫 **Ticket ID:** {ticket_id}
-📱 **Status:** Escalated to Human Support
-⏱️ **Response Time:** Within 15 minutes
+🎫 Ticket ID: {ticket_id}
+📱 Status: Escalated to Human Support
+⏱️ Response Time: Within 15 minutes
 
 Our expert team has been notified and will reach out to you shortly via:
 • In-app chat
@@ -449,7 +552,7 @@ You can check your ticket status anytime by typing 'ticket {ticket_id}'"""
         "role": "assistant",
         "content": response,
         "timestamp": datetime.now(),
-        "show_feedback": False
+        "show_feedback": True  # Changed to True
     }
     session_state["chat_history"].append(bot_message)
 
@@ -474,6 +577,20 @@ async def upload_file(file: UploadFile = File(...)):
 @app.get("/api/chat-history")
 async def get_chat_history():
     return {"chat_history": session_state["chat_history"]}
+
+
+@app.get("/api/suggestions")
+async def get_suggestions():
+    """Get initial suggestions when the chat loads."""
+    return {"suggestions": QUICK_REPLY_SUGGESTIONS["initial"]}
+
+
+@app.post("/api/typing-suggestions")
+async def get_typing_suggestions(request: dict):
+    """Get real-time suggestions based on what user is typing."""
+    user_input = request.get("input", "")
+    suggestions = get_context_suggestions(user_input)
+    return {"suggestions": suggestions}
 
 
 # Create templates directory if it doesn't exist
@@ -686,31 +803,68 @@ with open("templates/index.html", "w") as f:
             bottom: 20px;
         }
 
-        .quick-actions {
+        .suggestions-container {
             display: flex;
-            gap: 10px;
+            gap: 8px;
             margin-bottom: 12px;
+            flex-wrap: wrap;
+            max-height: 80px;
+            overflow-y: auto;
+            padding: 4px 0;
+            transition: opacity 0.15s ease;
+            min-height: 32px;
         }
 
-        .quick-action-btn {
-            flex: 1;
-            padding: 10px 20px;
-            border-radius: 24px;
+        .suggestion-pill {
+            padding: 8px 14px;
+            background: #f0f2f5;
+            border: 1px solid #e1e4e8;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #24292e;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            flex-shrink: 0;
+            font-weight: 500;
+            animation: slideInFade 0.3s ease-out forwards;
+            opacity: 0;
+        }
+
+        @keyframes slideInFade {
+            from {
+                opacity: 0;
+                transform: translateY(-5px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .suggestion-pill:hover {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            border: none;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            height: 44px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            border-color: #667eea;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(102, 126, 234, 0.2);
         }
 
-        .quick-action-btn:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        .suggestion-pill:active {
+            transform: translateY(0);
+        }
+
+        .suggestions-container::-webkit-scrollbar {
+            height: 4px;
+        }
+
+        .suggestions-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .suggestions-container::-webkit-scrollbar-thumb {
+            background: #d0d0d0;
+            border-radius: 2px;
         }
 
         .message-form {
@@ -855,10 +1009,7 @@ with open("templates/index.html", "w") as f:
                 border-radius: 12px;
             }
 
-            .quick-actions {
-                flex-direction: column;
-                gap: 8px;
-            }
+
         }
     </style>
 </head>
@@ -889,9 +1040,8 @@ with open("templates/index.html", "w") as f:
         </div>
 
         <div class="input-container">
-            <div class="quick-actions">
-                <button class="quick-action-btn" id="check-ticket-btn">Check ticket status</button>
-                <button class="quick-action-btn" id="connect-expert-btn">Connect with an Expert</button>
+            <div class="suggestions-container" id="suggestions-container">
+                <!-- Quick reply suggestions will be dynamically added here -->
             </div>
 
             <form class="message-form" id="message-form">
@@ -914,6 +1064,8 @@ with open("templates/index.html", "w") as f:
         document.addEventListener('DOMContentLoaded', function() {
             const now = new Date();
             document.getElementById('welcome-timestamp').textContent = formatTime(now);
+            // Load initial suggestions
+            loadInitialSuggestions();
         });
 
         // Chat container
@@ -924,10 +1076,6 @@ with open("templates/index.html", "w") as f:
         const messageInput = document.getElementById('message-input');
         const attachmentBtn = document.getElementById('attachment-btn');
         const fileInput = document.getElementById('file-input');
-
-        // Quick action buttons
-        const checkTicketBtn = document.getElementById('check-ticket-btn');
-        const connectExpertBtn = document.getElementById('connect-expert-btn');
 
         // File handling
         let uploadedImageData = null;
@@ -952,7 +1100,7 @@ with open("templates/index.html", "w") as f:
         });
 
         // Add message to chat
-        function addMessage(role, content, showFeedback = false) {
+        function addMessage(role, content, showFeedback = true) {  // Changed default to true
             const messageWrapper = document.createElement('div');
             messageWrapper.className = `message-wrapper ${role}-message-wrapper`;
 
@@ -962,7 +1110,11 @@ with open("templates/index.html", "w") as f:
 
             const messageContent = document.createElement('div');
             messageContent.className = `message-content ${role}-message`;
-            messageContent.innerHTML = content.replace(/\\n/g, '<br>');
+            // Format content: keep paragraphs and line breaks
+            const formattedContent = '<p>' + content
+                .replace(/\\n\\n/g, '</p><p>')
+                .replace(/\\n/g, '<br>') + '</p>';
+            messageContent.innerHTML = formattedContent;
 
             const timestamp = document.createElement('div');
             timestamp.className = `timestamp ${role}-timestamp`;
@@ -976,26 +1128,7 @@ with open("templates/index.html", "w") as f:
             } else {
                 messageWrapper.appendChild(avatar);
                 messageWrapper.appendChild(messageContent);
-
-                // Add feedback buttons if needed
-                if (showFeedback) {
-                    const feedbackContainer = document.createElement('div');
-                    feedbackContainer.className = 'feedback-container';
-
-                    const helpfulBtn = document.createElement('button');
-                    helpfulBtn.className = 'feedback-btn';
-                    helpfulBtn.textContent = '👍 Helpful';
-                    helpfulBtn.onclick = () => sendFeedback('yes');
-
-                    const notHelpfulBtn = document.createElement('button');
-                    notHelpfulBtn.className = 'feedback-btn';
-                    notHelpfulBtn.textContent = '👎 Not Helpful';
-                    notHelpfulBtn.onclick = () => sendFeedback('no');
-
-                    feedbackContainer.appendChild(helpfulBtn);
-                    feedbackContainer.appendChild(notHelpfulBtn);
-                    messageWrapper.appendChild(feedbackContainer);
-                }
+                // Feedback buttons removed: assistant messages now only show avatar and content.
             }
 
             chatContainer.appendChild(messageWrapper);
@@ -1016,10 +1149,151 @@ with open("templates/index.html", "w") as f:
             return typingIndicator;
         }
 
+        // Update suggestions with smooth animation
+        function updateSuggestions(suggestions) {
+            const container = document.getElementById('suggestions-container');
+
+            // Smooth transition
+            container.style.opacity = '0';
+
+            setTimeout(() => {
+                container.innerHTML = '';
+
+                if (suggestions && suggestions.length > 0) {
+                    suggestions.forEach((suggestion, index) => {
+                        const pill = document.createElement('div');
+                        pill.className = 'suggestion-pill';
+                        pill.textContent = suggestion;
+                        pill.style.animationDelay = `${index * 50}ms`;
+                        pill.onclick = () => {
+                            messageInput.value = suggestion;
+                            messageForm.dispatchEvent(new Event('submit'));
+                        };
+                        container.appendChild(pill);
+                    });
+                }
+
+                container.style.opacity = '1';
+            }, 150);
+        }
+
+        // Load initial suggestions
+        async function loadInitialSuggestions() {
+            try {
+                const response = await fetch('/api/suggestions');
+                const data = await response.json();
+                updateSuggestions(data.suggestions);
+            } catch (error) {
+                console.error('Error loading suggestions:', error);
+            }
+        }
+
+        // Real-time typing suggestions with debouncing
+        let typingTimer;
+        const doneTypingInterval = 300; // ms
+
+        async function fetchTypingSuggestions(input) {
+            if (input.trim().length < 2) {
+                // Show initial suggestions if input is empty or very short
+                if (input.trim().length === 0) {
+                    loadInitialSuggestions();
+                } else {
+                    updateSuggestions([]);
+                }
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/typing-suggestions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ input: input })
+                });
+
+                const data = await response.json();
+                updateSuggestions(data.suggestions);
+            } catch (error) {
+                console.error('Error fetching suggestions:', error);
+            }
+        }
+
+        // Handle input changes for real-time suggestions
+        messageInput.addEventListener('input', function(e) {
+            clearTimeout(typingTimer);
+            const inputValue = e.target.value;
+
+            // Debounce the API call
+            typingTimer = setTimeout(() => {
+                fetchTypingSuggestions(inputValue);
+            }, doneTypingInterval);
+        });
+
+        // Handle focus to show suggestions
+        messageInput.addEventListener('focus', function(e) {
+            if (e.target.value.trim().length === 0) {
+                loadInitialSuggestions();
+            } else {
+                fetchTypingSuggestions(e.target.value);
+            }
+        });
+
         // Send message
         async function sendMessage(message, imageData = null) {
+            // Handle special commands
+            if (message.toLowerCase() === 'check ticket status') {
+                // Clear suggestions
+                updateSuggestions([]);
+
+                // Call the check ticket status API
+                try {
+                    const response = await fetch('/api/check-ticket-status', {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    addMessage('assistant', data.response, true);  // Added true
+                } catch (error) {
+                    console.error('Error checking ticket status:', error);
+                    addMessage('assistant', 'Sorry, I encountered an error checking ticket status.', true);  // Added true
+                }
+
+                // Load initial suggestions after a delay
+                setTimeout(() => {
+                    loadInitialSuggestions();
+                }, 500);
+                return;
+            }
+
+            if (message.toLowerCase() === 'connect with an expert') {
+                // Clear suggestions
+                updateSuggestions([]);
+
+                // Call the connect expert API
+                try {
+                    const response = await fetch('/api/connect-expert', {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    addMessage('assistant', data.response, true);  // Added true
+                } catch (error) {
+                    console.error('Error connecting with expert:', error);
+                    addMessage('assistant', 'Sorry, I encountered an error connecting you with an expert.', true);  // Added true
+                }
+
+                // Load initial suggestions after a delay
+                setTimeout(() => {
+                    loadInitialSuggestions();
+                }, 500);
+                return;
+            }
+
+            // Normal message handling
             // Add user message
             addMessage('user', message);
+
+            // Clear suggestions after sending
+            updateSuggestions([]);
 
             // Show typing indicator
             const typingIndicator = showTypingIndicator();
@@ -1045,6 +1319,11 @@ with open("templates/index.html", "w") as f:
                 // Add bot response
                 addMessage('assistant', data.response, data.show_feedback);
 
+                // Load initial suggestions after response
+                setTimeout(() => {
+                    loadInitialSuggestions();
+                }, 500);
+
                 // Reset attachment
                 if (uploadedImageData) {
                     attachmentBtn.classList.remove('success');
@@ -1057,7 +1336,11 @@ with open("templates/index.html", "w") as f:
             } catch (error) {
                 console.error('Error sending message:', error);
                 typingIndicator.remove();
-                addMessage('assistant', 'Sorry, I encountered an error. Please try again.');
+                addMessage('assistant', 'Sorry, I encountered an error. Please try again.', true);  // Added true
+                // Show initial suggestions even on error
+                setTimeout(() => {
+                    loadInitialSuggestions();
+                }, 500);
             }
         }
 
@@ -1078,7 +1361,7 @@ with open("templates/index.html", "w") as f:
                 });
 
                 const data = await response.json();
-                addMessage('assistant', data.response);
+                addMessage('assistant', data.response, true);  // Added true
 
             } catch (error) {
                 console.error('Error sending feedback:', error);
@@ -1093,35 +1376,6 @@ with open("templates/index.html", "w") as f:
             if (message) {
                 await sendMessage(message, uploadedImageData);
                 messageInput.value = '';
-            }
-        });
-
-        // Handle quick action buttons
-        checkTicketBtn.addEventListener('click', async function() {
-            try {
-                const response = await fetch('/api/check-ticket-status', {
-                    method: 'POST'
-                });
-
-                const data = await response.json();
-                addMessage('assistant', data.response);
-
-            } catch (error) {
-                console.error('Error checking ticket status:', error);
-            }
-        });
-
-        connectExpertBtn.addEventListener('click', async function() {
-            try {
-                const response = await fetch('/api/connect-expert', {
-                    method: 'POST'
-                });
-
-                const data = await response.json();
-                addMessage('assistant', data.response);
-
-            } catch (error) {
-                console.error('Error connecting with expert:', error);
             }
         });
 
