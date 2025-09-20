@@ -1113,8 +1113,8 @@ with open("templates/index.html", "w") as f:
             justify-content: center;
             cursor: pointer;
             transition: all 0.2s ease;
-            color: #667eea;
-            font-size: 18px;
+            color: #54656f;
+            padding: 0;
         }
 
         .attachment-btn:hover {
@@ -1128,6 +1128,10 @@ with open("templates/index.html", "w") as f:
             color: #4caf50;
             border-color: #4caf50;
             pointer-events: none;
+        }
+
+        .attachment-btn.success svg path {
+            fill: #4caf50;
         }
 
         .feedback-container {
@@ -1239,9 +1243,17 @@ with open("templates/index.html", "w") as f:
 
             <form class="message-form" id="message-form">
                 <input type="file" id="file-input" class="file-input" accept="image/jpeg,image/jpg,image/png">
-                <div class="attachment-btn" id="attachment-btn">📎</div>
+                <button type="button" class="attachment-btn" id="attachment-btn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z" fill="currentColor"/>
+                    </svg>
+                </button>
                 <input type="text" class="message-input" id="message-input" placeholder="Type your message...">
-                <button type="submit" class="send-btn">➤</button>
+                <button type="submit" class="send-btn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="white"/>
+                    </svg>
+                </button>
             </form>
         </div>
     </div>
@@ -1286,7 +1298,12 @@ with open("templates/index.html", "w") as f:
                     uploadedImageData = event.target.result.split(',')[1]; // Get base64 data
                     uploadedFileName = file.name;
                     attachmentBtn.classList.add('success');
-                    attachmentBtn.innerHTML = '✓';
+                    // Change icon to checkmark
+                    attachmentBtn.innerHTML = `
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/>
+                        </svg>
+                    `;
                 };
                 reader.readAsDataURL(file);
             }
@@ -1299,7 +1316,7 @@ with open("templates/index.html", "w") as f:
 
             const avatar = document.createElement('div');
             avatar.className = `avatar ${role}-avatar`;
-            avatar.textContent = role === 'user' ? 'U' : 'N';
+            avatar.textContent = role === 'user' ? '@' : 'N';
 
             const messageContent = document.createElement('div');
             messageContent.className = `message-content ${role}-message`;
@@ -1520,7 +1537,11 @@ with open("templates/index.html", "w") as f:
                 // Reset attachment
                 if (uploadedImageData) {
                     attachmentBtn.classList.remove('success');
-                    attachmentBtn.innerHTML = '📎';
+                    attachmentBtn.innerHTML = `
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z" fill="currentColor"/>
+                        </svg>
+                    `;
                     uploadedImageData = null;
                     uploadedFileName = '';
                     fileInput.value = '';
