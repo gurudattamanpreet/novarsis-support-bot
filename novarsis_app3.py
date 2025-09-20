@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Novarsis Support Center", description="AI Support Assistant for Novarsis SEO Tool")
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBrpsGuAmfZC6tW2__ck0QUQTv7MhlKVgw")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBzR6a1OlDuzUMEIpgNNIMMsH-B5Wgdy38")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Gemini Flash 2.0 model
