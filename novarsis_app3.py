@@ -7,7 +7,7 @@ import os
 import json
 import time
 import random
-import google.generativeai as genai
+import requests
 from datetime import datetime, timedelta
 import base64
 import io
@@ -27,34 +27,20 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Novarsis Support Center", description="AI Support Assistant for Novarsis SEO Tool")
 
-# Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDPAxeBhQ_OENApv3It8ccLbDeVUG0aVVA")
-genai.configure(api_key=GEMINI_API_KEY)
+# Configure Ollama API - UPDATED FOR HOSTED SERVICE
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "14bfe5365cc246dc82d933e3af2aa5b6.hz2asqgJi2bO_gpN7Cp1Hcku")  # Empty default, will be set via environment
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://ollama.com")  # Default to hosted service
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b")  # Default model
+USE_HOSTED_OLLAMA = True  # Always use hosted service
 
-# Initialize Gemini Flash 2.0 model
-try:
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
-    logger.info("Gemini model initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize Gemini model: {str(e)}")
-    model = None
+# Initialize Ollama model
+model = True  # We'll assume it's available and handle errors in the API call
 
-# Initialize embedding model - with error handling for quota issues
+# Initialize embedding model - Ollama doesn't have a direct embedding API like Gemini
+# So we'll use keyword-based filtering only
 reference_embedding = None
 embedding_model = None
-try:
-    embedding_model = 'models/embedding-001'
-    reference_text = "Novarsis AIO SEO Tool support, SEO analysis, website analysis, meta tags, page structure, link analysis, SEO check, SEO report, subscription, account, billing, plan, premium, starter, error, bug, issue, problem, not working, failed, crash, login, password, analysis, report, dashboard, settings, integration, Google, API, website, URL, scan, audit, optimization, mobile, speed, performance, competitor, ranking, keywords, backlinks, technical SEO, canonical, schema, sitemap, robots.txt, crawl, index, search console, analytics, traffic, organic, SERP"
-    reference_embedding = genai.embed_content(
-        model=embedding_model,
-        content=reference_text,
-        task_type="retrieval_document",
-    )['embedding']
-    logger.info("Embedding model initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize embedding model: {str(e)}")
-    # Continue without embedding functionality
-    reference_embedding = None
+logger.info("Using keyword-based filtering (Ollama doesn't provide embedding API)")
 
 # Constants
 WHATSAPP_NUMBER = "+91-9999999999"
@@ -209,7 +195,7 @@ NOVARSIS_KEYWORDS = [
 
 # Casual/intro keywords that should be allowed
 CAUSAL_ALLOWED = [
-    'hello', 'hi', 'hey', 'who are you', 'what are you', 'what can you do', 
+    'hello', 'hi', 'hey', 'who are you', 'what are you', 'what can you do',
     'how can you help', 'help me', 'assist', 'support', 'thanks', 'thank you',
     'bye', 'goodbye', 'good morning', 'good afternoon', 'good evening',
     'yes', 'no', 'okay', 'ok', 'sure', 'please', 'sorry'
@@ -220,7 +206,7 @@ UNRELATED_TOPICS = [
     'recipe', 'cooking', 'food', 'biryani', 'pizza', 'travel', 'vacation',
     'movie', 'song', 'music', 'game', 'sports', 'cricket', 'football',
     'weather', 'politics', 'news', 'stock', 'crypto', 'bitcoin',
-    'medical', 'doctor', 'medicine', 'disease', 'health' 
+    'medical', 'doctor', 'medicine', 'disease', 'health'
 ]
 
 # Greeting keywords
@@ -247,6 +233,7 @@ except Exception as e:
 
     templates = SimpleTemplates("templates")
 
+
 # FAST MCP - Fast Adaptive Semantic Transfer with Memory Context Protocol
 class FastMCP:
     def __init__(self):
@@ -268,7 +255,7 @@ class FastMCP:
             "pending_action": None,  # Any pending action
             "emotional_tone": "neutral"  # User's emotional state
         }
-    
+
     def update_context(self, role, message):
         """Update conversation context with new message"""
         entry = {
@@ -277,23 +264,23 @@ class FastMCP:
             "timestamp": datetime.now(),
             "intent": self.extract_intent(message) if role == "user" else None
         }
-        
+
         self.conversation_memory.append(entry)
         self.context_window.append(entry)
-        
+
         # Keep context window to last 10 messages
         if len(self.context_window) > 10:
             self.context_window.pop(0)
-        
+
         if role == "user":
             self.analyze_user_message(message)
         else:
             self.analyze_bot_response(message)
-    
+
     def extract_intent(self, message):
         """Extract user intent from message"""
         message_lower = message.lower()
-        
+
         # Intent patterns
         if any(word in message_lower for word in ['how', 'what', 'where', 'when', 'why']):
             return "question"
@@ -311,11 +298,11 @@ class FastMCP:
             return "elaboration_request"
         else:
             return "statement"
-    
+
     def analyze_user_message(self, message):
         """Analyze user message for context and emotion"""
         message_lower = message.lower()
-        
+
         # Update emotional tone
         if any(word in message_lower for word in ['urgent', 'asap', 'immediately', 'quickly']):
             self.conversation_state["emotional_tone"] = "urgent"
@@ -323,7 +310,7 @@ class FastMCP:
             self.conversation_state["emotional_tone"] = "frustrated"
         elif any(word in message_lower for word in ['please', 'thanks', 'appreciate']):
             self.conversation_state["emotional_tone"] = "polite"
-        
+
         # Extract entities
         if 'website' in message_lower or 'site' in message_lower:
             self.entities['subject'] = 'website'
@@ -331,58 +318,59 @@ class FastMCP:
             self.entities['subject'] = 'seo'
         if 'report' in message_lower:
             self.entities['subject'] = 'report'
-        
+
         self.user_profile["interaction_count"] += 1
-    
+
     def analyze_bot_response(self, message):
         """Track what the bot asked or offered"""
         message_lower = message.lower()
-        
+
         if '?' in message:
             self.conversation_state["last_question"] = message
             self.conversation_state["expecting_response"] = "answer"
-        
+
         if 'need more help' in message_lower or 'need help' in message_lower:
             self.conversation_state["expecting_response"] = "help_confirmation"
-        
+
         if 'try these steps' in message_lower or 'follow these' in message_lower:
             self.conversation_state["expecting_response"] = "feedback_on_solution"
-    
+
     def get_context_prompt(self):
         """Generate context-aware prompt for AI"""
         context_parts = []
-        
+
         # Add conversation history
         if self.context_window:
             context_parts.append("=== Conversation Context ===")
             for entry in self.context_window[-5:]:  # Last 5 messages
                 role = "User" if entry["role"] == "user" else "Assistant"
                 context_parts.append(f"{role}: {entry['content']}")
-        
+
         # Add conversation state
         if self.conversation_state["expecting_response"]:
             context_parts.append(f"\n[Expecting: {self.conversation_state['expecting_response']}]")
-        
+
         if self.conversation_state["emotional_tone"] != "neutral":
             context_parts.append(f"[User tone: {self.conversation_state['emotional_tone']}]")
-        
+
         if self.entities:
             context_parts.append(f"[Current topic: {', '.join(self.entities.values())}]")
-        
+
         return "\n".join(context_parts)
-    
+
     def should_filter_novarsis(self, message):
         """Determine if Novarsis filter should be applied"""
         # Don't filter if we're expecting a response to our question
         if self.conversation_state["expecting_response"] in ["help_confirmation", "answer", "feedback_on_solution"]:
             return False
-        
+
         # Don't filter for contextual responses
         intent = self.extract_intent(message)
         if intent in ["confirmation", "denial", "elaboration_request"]:
             return False
-        
+
         return True
+
 
 # Initialize FAST MCP
 fast_mcp = FastMCP()
@@ -462,40 +450,29 @@ def is_greeting(query: str) -> bool:
     query_lower = query.lower().strip()
     return any(greeting in query_lower for greeting in GREETING_KEYWORDS)
 
+
 def is_casual_allowed(query: str) -> bool:
     """Check if it's a casual/intro question that should be allowed"""
     query_lower = query.lower().strip()
     return any(word in query_lower for word in CAUSAL_ALLOWED)
+
 
 def is_clearly_unrelated(query: str) -> bool:
     """Check if query is clearly unrelated to our tool"""
     query_lower = query.lower().strip()
     return any(topic in query_lower for topic in UNRELATED_TOPICS)
 
+
 def is_novarsis_related(query: str) -> bool:
     # First check if it's a casual/intro question - always allow these
     if is_casual_allowed(query):
         return True
-    
+
     # Check if it's clearly unrelated - always filter these
     if is_clearly_unrelated(query):
         return False
-    
-    # Only use semantic filtering if embedding model was successfully initialized
-    if reference_embedding is not None and embedding_model is not None:
-        try:
-            query_embedding = genai.embed_content(
-                model=embedding_model,
-                content=query,
-                task_type="retrieval_query",
-            )['embedding']
-            similarity = cosine_similarity(reference_embedding, query_embedding)
-            if similarity >= 0.7:
-                return True
-        except Exception as e:
-            logger.error(f"Error in semantic filtering: {str(e)}")
 
-    # Fall back to keyword-based filtering
+    # Since Ollama doesn't have embedding API, we use keyword-based filtering
     query_lower = query.lower()
     return any(keyword in query_lower for keyword in NOVARSIS_KEYWORDS)
 
@@ -508,29 +485,110 @@ I'm here to help you with any questions or issues you might have regarding our S
 How can I assist you today? Feel free to ask any questions about Novarsis!"""
 
 
-def get_ai_response(user_input: str, image_data: Optional[str] = None, chat_history: list = None) -> str:
-    if not model:
-        return "I apologize, but I'm having trouble connecting to my AI service. Please try again in a moment, or click 'Connect to Human' for immediate assistance."
+def call_ollama_api(prompt: str, image_data: Optional[str] = None) -> str:
+    """Call Ollama API with the prompt - supports both local and hosted Ollama"""
+    try:
+        # Check if using hosted service with API key
+        if OLLAMA_API_KEY and USE_HOSTED_OLLAMA:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {OLLAMA_API_KEY}"
+            }
+        else:
+            # Local Ollama doesn't need auth
+            headers = {
+                "Content-Type": "application/json"
+            }
 
+        # Try different API formats based on service type
+        if USE_HOSTED_OLLAMA:
+            # Hosted service uses OpenAI compatible endpoint
+            data = {
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "temperature": 0.7
+            }
+            endpoint = f"{OLLAMA_BASE_URL}/v1/chat/completions"  # OpenAI compatible endpoint
+        else:
+            # Local Ollama format
+            data = {
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False
+            }
+            endpoint = f"{OLLAMA_BASE_URL}/api/generate"
+
+        # If there's image data, include it (for vision models)
+        if image_data and not USE_HOSTED_OLLAMA:
+            data["images"] = [image_data]
+
+        logger.info(f"Calling Ollama API at: {endpoint}")
+
+        # Make the API call with increased timeout
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=data,
+            timeout=60  # 60 seconds timeout
+        )
+
+        logger.info(f"Ollama response status: {response.status_code}")
+
+        if response.status_code == 200:
+            result = response.json()
+
+            # Different response formats for local vs hosted
+            if USE_HOSTED_OLLAMA:
+                # OpenAI compatible format
+                if "choices" in result and len(result["choices"]) > 0:
+                    return result["choices"][0].get("message", {}).get("content", "No response generated.")
+                else:
+                    return result.get("response", "No response generated.")
+            else:
+                # Local Ollama format
+                return result.get("response", "I couldn't generate a response. Please try again.")
+        else:
+            # Handle specific error codes
+            if response.status_code == 401:
+                return "Authentication error: Invalid API key. Please check your Ollama API key."
+            elif response.status_code == 404:
+                return f"Model not found: The model '{OLLAMA_MODEL}' is not available. Please check the model name."
+            else:
+                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return f"API Error ({response.status_code}). Please check if the service is available."
+
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Cannot connect to Ollama: {e}")
+        return f"Cannot connect to Ollama at {OLLAMA_BASE_URL}. Please check your internet connection and the service URL."
+    except requests.exceptions.Timeout:
+        logger.error("Ollama API timeout")
+        return "Response timeout. The service is taking too long to respond. Please try a simpler query."
+    except Exception as e:
+        logger.error(f"Ollama API error: {str(e)}")
+        return f"Error: {str(e)}. Please check the logs for details."
+
+
+def get_ai_response(user_input: str, image_data: Optional[str] = None, chat_history: list = None) -> str:
     try:
         # Get FAST MCP instance
         mcp = session_state.get("fast_mcp", FastMCP())
-        
+
         # Update MCP with user input
         mcp.update_context("user", user_input)
-        
+
         # Check if we should apply Novarsis filter
         should_filter = mcp.should_filter_novarsis(user_input)
-        
+
         # Only filter if MCP says we should
         if should_filter and not is_novarsis_related(user_input):
             return """Sorry, I only help with Novarsis SEO Tool.
-            
+
 Please let me know if you have any SEO tool related questions?"""
-        
+
         # Get context from MCP
         context = mcp.get_context_prompt()
-        
+
         # Enhanced system prompt based on emotional tone
         enhanced_prompt = SYSTEM_PROMPT
         if mcp.conversation_state["emotional_tone"] == "urgent":
@@ -538,18 +596,20 @@ Please let me know if you have any SEO tool related questions?"""
         elif mcp.conversation_state["emotional_tone"] == "frustrated":
             enhanced_prompt += "\n[User is frustrated - be extra helpful and empathetic]"
 
+        # Create the full prompt
         if image_data:
             prompt = f"{enhanced_prompt}\n\n{context}\n\nUser query with screenshot: {user_input}"
-            image = Image.open(io.BytesIO(base64.b64decode(image_data)))
-            response = model.generate_content([prompt, image])
         else:
             prompt = f"{enhanced_prompt}\n\n{context}\n\nUser query: {user_input}"
-            response = model.generate_content(prompt)
+
+        # Call Ollama API
+        response_text = call_ollama_api(prompt, image_data)
 
         # Remove ** symbols from the response
-        response_text = response.text.replace("**", "")
+        response_text = response_text.replace("**", "")
         # Remove any repetitive intro lines if present
-        response_text = re.sub(r'^(Hey there[!,. ]*I\'?m Nova.*?assistant[.!]?\s*)', '', response_text, flags=re.IGNORECASE).strip()
+        response_text = re.sub(r'^(Hey there[!,. ]*I\'?m Nova.*?assistant[.!]?\s*)', '', response_text,
+                               flags=re.IGNORECASE).strip()
         # Keep alphanumeric, spaces, common punctuation, newlines, and bullet/section characters
         response_text = re.sub(r'[^a-zA-Z0-9 .,!?:;()\n•-]', '', response_text)
 
@@ -566,11 +626,11 @@ Please let me know if you have any SEO tool related questions?"""
         response_text = re.sub(r'\n?(\d+\.)\s*', r'\n\n\1 ', response_text)  # Ensure number+title on same line
         # Add spacing after list item sentences for readability
         response_text = re.sub(r'(\n\d+\. [^\n]+)(?=\n\d+\.)', r'\1\n', response_text)
-        response_text = re.sub(r'(•)', r'\n\1', response_text)       # Bullets
+        response_text = re.sub(r'(•)', r'\n\1', response_text)  # Bullets
         response_text = re.sub(r'(Step\s+\d+)', r'\n\1', response_text)  # Steps
-        response_text = re.sub(r'(Tip:)', r'\n\1', response_text)        # Tips
-        response_text = re.sub(r'(Solution:)', r'\n\1', response_text)   # Solutions
-        response_text = re.sub(r'(Alternative:)', r'\n\1', response_text) # Alternatives
+        response_text = re.sub(r'(Tip:)', r'\n\1', response_text)  # Tips
+        response_text = re.sub(r'(Solution:)', r'\n\1', response_text)  # Solutions
+        response_text = re.sub(r'(Alternative:)', r'\n\1', response_text)  # Alternatives
 
         # --- Final cleanup for unnecessary spaces and gaps ---
         # Remove spaces before punctuation
@@ -657,7 +717,7 @@ Our team is working on your issue. You'll receive a notification when there's an
     # Update FAST MCP with bot response
     if "fast_mcp" in session_state:
         session_state["fast_mcp"].update_context("assistant", response)
-    
+
     # Add bot response to chat history
     bot_message = {
         "role": "assistant",
